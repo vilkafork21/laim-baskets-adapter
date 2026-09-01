@@ -10,8 +10,6 @@
 
 import re
 
-from openpyxl.utils import get_column_letter
-
 from .xlsx_reader import RawSheet
 
 _SPACES = re.compile(r"\s+")
@@ -52,27 +50,11 @@ def merge_header(sheet: RawSheet, header_rows0: list[int], c: int,
     return " ".join(parts)
 
 
-def dedup_names(names: list[str]) -> tuple[list[str], dict[str, str]]:
-    """Дубли имён → «имя#2», «имя#3»… (карта переименований — в отчёт)."""
+def dedup_names(names: list[str]) -> list[str]:
+    """Дубли имён → «имя#2», «имя#3»…"""
     seen: dict[str, int] = {}
-    result, renames = [], {}
+    result = []
     for name in names:
         seen[name] = seen.get(name, 0) + 1
-        if seen[name] == 1:
-            result.append(name)
-        else:
-            new_name = f"{name}#{seen[name]}"
-            result.append(new_name)
-            renames[new_name] = name
-    return result, renames
-
-
-def header_names(sheet: RawSheet, header_rows: list[int]) -> list[str]:
-    """Итоговые имена всех колонок листа для заданных 1-based строк шапки —
-    ровно те, которые примет резолвер при table.header_rows == header_rows."""
-    header_rows0 = [r - 1 for r in header_rows]
-    merge_map = header_merge_map(sheet, header_rows0)
-    raw = [merge_header(sheet, header_rows0, c, merge_map) for c in range(sheet.n_cols)]
-    named = [name or f"unnamed_{get_column_letter(c + 1)}" for c, name in enumerate(raw)]
-    deduped, _renames = dedup_names(named)
-    return deduped
+        result.append(name if seen[name] == 1 else f"{name}#{seen[name]}")
+    return result

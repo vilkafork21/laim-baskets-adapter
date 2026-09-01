@@ -27,7 +27,7 @@ def coerce_numeric(value: object) -> float:
     if value is None or str(value).strip() == "":
         return math.nan
     if isinstance(value, bool):
-        raise ValueError("boolean is not a numeric score")
+        raise ValueError("boolean не является числовой оценкой")
     if isinstance(value, (int, float)):
         result = float(value)
     else:
@@ -37,5 +37,5 @@ def coerce_numeric(value: object) -> float:
         if percent:
             result /= 100
     if not math.isfinite(result):
-        raise ValueError("numeric score must be finite")
+        raise ValueError("числовая оценка должна быть конечной")
     return result

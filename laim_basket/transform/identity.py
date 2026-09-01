@@ -3,8 +3,8 @@
 import math
 from dataclasses import dataclass
 
-from ..errors import ValueMapError
-from .values import coerce_numeric
+from ..errors import LayoutError
+from .values import blank, coerce_numeric
 
 
 @dataclass
@@ -15,18 +15,12 @@ class IdentityResult:
     accounting: dict
 
 
-def _is_blank(value) -> bool:
-    return value is None or str(value).strip() == "" or (
-        isinstance(value, float) and math.isnan(value)
-    )
-
-
 _FLOAT_ID_PRECISION_LIMIT = 2 ** 53  # выше — float уже потерял младшие разряды
 
 
 def _render_id_values(values: list) -> tuple[list[str] | None, str | None]:
     """Значения колонки как id: None + причина, если колонка непригодна."""
-    if any(_is_blank(v) for v in values):
+    if any(blank(v) for v in values):
         return None, "в колонке есть пропуски"
     if any(isinstance(v, float) and abs(v) >= _FLOAT_ID_PRECISION_LIMIT for v in values):
         return None, "float с потерянной точностью (≥2^53) — id повреждён Excel"
@@ -69,7 +63,7 @@ def _weight_counts(rows: list[list], columns: list[str], source: str) -> list[in
         else:
             counts.append(int(value))
     if bad:
-        raise ValueMapError(
+        raise LayoutError(
             f"Вес {source!r} обязан быть целым числом ≥ 1 в каждой строке "
             f"(ноль/отрицательный вес ломает взвешивание и bootstrap)",
             column=source, bad_values=bad[:10], bad_count=len(bad),
@@ -95,20 +89,32 @@ def build_identity(
     n = len(rows)
 
     session_role = roles.get("session_id")
+    session_id = None
     if isinstance(session_role, dict):
         source = session_role["source"]
         session_id, reason = _render_id_values(
             [row[columns.index(source)] for row in rows]
         )
         if session_id is None:
-            raise ValueMapError("Колонка session_id непригодна", reason=reason)
-        accounting["session_id"] = {"strategy": "source", "source": source}
-    elif groups is not None:
-        session_id = list(groups)
-        accounting["session_id"] = {"strategy": "derive", "rule": "reference_group_index"}
-    else:
-        session_id = list(range(n))
-        accounting["session_id"] = {"strategy": "derive", "rule": "row_index"}
+            # Непригодный источник — деградация, как у query_id: корзина с
+            # пропусками в session-колонке не повод ронять ноду.
+            accounting["session_id"] = {
+                "strategy": "derive",
+                "rule": "reference_group_index" if groups is not None else "row_index",
+                "source_rejected": source,
+                "reason": reason,
+            }
+        else:
+            accounting["session_id"] = {"strategy": "source", "source": source}
+    if session_id is None:
+        if groups is not None:
+            session_id = list(groups)
+        else:
+            session_id = list(range(n))
+        accounting.setdefault("session_id", {
+            "strategy": "derive",
+            "rule": "reference_group_index" if groups is not None else "row_index",
+        })
     query_scope = session_id if session_role is not None or groups is not None else None
 
     if query_id_override is not None:

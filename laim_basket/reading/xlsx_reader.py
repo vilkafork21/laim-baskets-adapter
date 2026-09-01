@@ -22,8 +22,6 @@ class RawSheet:
     grid: list[list]                 # [row][col], 0-based; кэш значений формул
     merged: list[tuple[int, int, int, int]]  # (r1, c1, r2, c2) 0-based включительно
     formulas: dict[tuple[int, int], str] = field(default_factory=dict)
-    raw_n_rows: int = 0              # размеры по openpyxl до обрезки пустых хвостов
-    raw_n_cols: int = 0
 
     @property
     def n_rows(self) -> int:
@@ -89,8 +87,6 @@ def read_workbook(path) -> dict[str, RawSheet]:
             grid=grid,
             merged=merged,
             formulas=formulas,
-            raw_n_rows=ws.max_row,
-            raw_n_cols=ws.max_column,
         )
 
     if not sheets:

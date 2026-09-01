@@ -6,6 +6,15 @@ from ..umr_schema import validate_flat_canon
 from .grouping import GroupedTable
 from .identity import build_identity
 from .region import TableRegion
+from .values import blank
+
+
+def reference_answer_names(count: int) -> list[str]:
+    """Имена эталонов по спецификации «Формат тестового датасета»: одиночный —
+    reference_answer, несколько — reference_answer_1..N."""
+    if count == 1:
+        return ["reference_answer"]
+    return [f"reference_answer_{index}" for index in range(1, count + 1)]
 
 
 def raw_column_names(columns: list[str], reserved: set[str]) -> dict[str, str]:
@@ -26,11 +35,11 @@ def _column(table: GroupedTable, source: str) -> list[object]:
 
 
 def _text(value: object) -> str | None:
-    return None if value is None or str(value).strip() == "" else str(value)
+    return None if blank(value) else str(value)
 
 
 def _scalar(value: object) -> object | None:
-    if value is None or str(value).strip() == "":
+    if blank(value):
         return None
     if isinstance(value, float) and value.is_integer():
         return int(value)
@@ -83,8 +92,8 @@ def build_canon(
     assessor = roles.get("assessor_id")
     if assessor:
         data["assessor_id"] = [_scalar(value) for value in _column(grouped, assessor["source"])]
-    for index, source in enumerate(roles.get("reference_answers", [])):
-        name = "reference_answer" if index == 0 else f"reference_answer_{index + 1}"
+    references = roles.get("reference_answers", [])
+    for name, source in zip(reference_answer_names(len(references)), references):
         data[name] = [_text(value) for value in _column(grouped, source)]
     if grouped.group_index is not None:
         data["reference_group_id"] = [f"group-{value}" for value in grouped.group_index]

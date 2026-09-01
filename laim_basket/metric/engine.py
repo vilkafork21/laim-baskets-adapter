@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
-from ..errors import NotEvaluableError
-from ..measurement import decimal_value, reported_quantum
+from ..errors import MeasurementPlanError, NotEvaluableError
+from .resolve import decimal_value, reported_quantum
 from ..models import MeasurementPlan, ResolvedLayout
 from ..transform.values import blank as _blank, normalize_key
+
+logger = logging.getLogger(__name__)
 
 
 def _numeric(value: object) -> Decimal | None:
@@ -26,7 +29,18 @@ def _normalizer(source: dict[str, object]):
     if normalization == "label":
         return lambda value: None if _blank(value) else normalize_key(value)
     if normalization == "numeric":
-        base = _numeric
+        def base(value: object) -> Decimal | None:
+            try:
+                return _numeric(value)
+            except MeasurementPlanError:
+                # Нечисловой текст в колонке оценки — пропуск в данных, а не
+                # поломка плана: решение принимает missing_policy, как для пустой
+                # ячейки. Иначе одна ячейка убивает разбор всей корзины.
+                logger.warning(
+                    "Колонка %s: нечисловое значение %r трактуется как пропуск оценки",
+                    source["column_id"], str(value)[:80],
+                )
+                return None
     else:
         lookup = {normalize_key(key): decimal_value(value) for key, value in normalization.items()}
 
@@ -187,10 +201,11 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
         score * weight for (_record, score), weight in zip(scored, weights)
     ) / total_weight
     published_recomputed = _published_scale(recomputed, plan.scale)
-    final_value = plan.reported_value if plan.reported_value is not None else published_recomputed
-    source = "validation_report" if plan.reported_value is not None else "recomputed"
+    # КМ — только заявленная в отчёте о валидации: без неё value и вердикт
+    # пусты, пересчёт остаётся информационным полем.
+    final_value = plan.reported_value
     verdict = None
-    if plan.threshold is not None:
+    if plan.threshold is not None and final_value is not None:
         if plan.comparator == ">=":
             verdict = "passed" if final_value >= plan.threshold else "failed"
         else:
@@ -205,6 +220,17 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
             else "mismatch"
         )
         difference = plan.reported_value - published_recomputed
+        logger.info(
+            "Сверка КМ: пересчёт %s, заявлено в отчёте %s, допуск %s -> %s (расхождение %s)",
+            published_recomputed, plan.reported_value, quantum, reconciliation, difference,
+        )
+    else:
+        logger.info("Отчёт о валидации не объявил КМ: value пуст, информационный "
+                    "пересчёт %s", published_recomputed)
+    logger.info(
+        "Оценено единиц %d из %d, суммарный вес %s, вердикт по порогу %s",
+        len(scored), len(records), total_weight, verdict,
+    )
 
     scored_frame = frame.copy()
     per_row: list[float | None] = [None] * len(frame)
@@ -219,37 +245,21 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
         "excluded_units": len(records) - len(scored),
         "weight_sum": float(total_weight),
     }
+    # Внутренняя сводка прогона: контракт монитора собирает main.py из плана,
+    # а журнал прогона — pipeline. Здесь только то, что они реально читают.
     km = {
-        "report_version": "laim-km.v2",
-        "status": "computed",
-        "value_source": source,
         "recomputed_value": float(published_recomputed),
         "coverage": coverage,
         "reconciliation": {
             "status": reconciliation,
             "difference": float(difference) if difference is not None else None,
         },
-        "evidence": {key: list(value) for key, value in plan.evidence.items()},
         "threshold_verdict": verdict,
         "main_metric": {
             "name": plan.metric_name,
-            "value": float(final_value),
+            "value": float(final_value) if final_value is not None else None,
             "recomputed_value": float(published_recomputed),
-            "value_source": source,
-            "n_units": len(scored),
-            "units_dropped_nan_score": len(records) - len(scored),
-            "evaluation_unit": plan.evaluation_unit,
-            "scoring_method": plan.method,
-            "aggregation": plan.reducer,
-            "weighted": weighted,
-            "missing_policy": plan.missing_policy,
-            "majority_denominator": plan.majority_denominator,
             "scale": plan.scale,
-            "precision": plan.precision,
-            "threshold": float(plan.threshold) if plan.threshold is not None else None,
-            "comparator": plan.comparator,
-            "threshold_verdict": verdict,
-            "reconciliation_status": reconciliation,
         },
     }
     return scored_frame, km

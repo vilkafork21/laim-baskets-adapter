@@ -45,7 +45,6 @@ def _number_groups(roots: list[int]) -> list[int]:
 def _merged_rows(sheet: RawSheet, region: TableRegion) -> tuple[list[list[object]], list[int], int]:
     sets = _DisjointSets(len(region.rows))
     rows = [list(row) for row in region.rows]
-    raw_to_region = {raw: index for index, raw in enumerate(region.raw_indexes)}
     filled = 0
     first, last = region.first_data_row0, region.first_data_row0 + len(rows) - 1
     for row1, col1, row2, col2 in sheet.merged:
@@ -54,10 +53,7 @@ def _merged_rows(sheet: RawSheet, region: TableRegion) -> tuple[list[list[object
             continue
         for index in indexes[1:]:
             sets.union(indexes[0], index)
-        for raw_column in range(col1, col2 + 1):
-            if raw_column not in raw_to_region:
-                continue
-            column = raw_to_region[raw_column]
+        for column in range(col1, min(col2, len(region.columns) - 1) + 1):
             top = rows[indexes[0]][column]
             for index in indexes[1:]:
                 if rows[index][column] is None and top is not None:
@@ -240,19 +236,27 @@ def _unroll_blob(region: TableRegion, blob: dict[str, object]) -> GroupedTable:
             query_ids.append(
                 literal[turn - 1][0] if literal is not None else f"row-{source_row}-t{turn}"
             )
-    if invalid:
+    if not rows:
         raise LayoutError(
-            "Dialogue blob содержит непустые строки, которые нельзя полностью развернуть",
+            "Dialogue blob не развернулся ни на одной строке",
             invalid_rows=invalid[:10],
             invalid_count=len(invalid),
         )
+    accounting: dict[str, object] = {
+        "source_rows": len(region.rows), "unrolled_pairs": len(rows),
+    }
+    if invalid:
+        # Неразворачиваемое меньшинство — не повод ронять корзину: решение об
+        # отбросе принимает run_layout после исчерпания repair.
+        accounting["undecodable_blob_rows"] = [item["row"] for item in invalid]
+        accounting["undecodable_blob_samples"] = invalid[:10]
     return GroupedTable(
         columns=["__blob_input_query", "__blob_output_answer", *region.columns],
         rows=rows,
         source_rows=source_rows,
         group_index=_number_groups(groups),
         query_id_override=query_ids,
-        accounting={"source_rows": len(region.rows), "unrolled_pairs": len(rows)},
+        accounting=accounting,
     )
 
 

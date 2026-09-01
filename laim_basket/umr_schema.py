@@ -4,12 +4,10 @@ import math
 import re
 from numbers import Integral
 
+from .transform.values import blank
+
 REQUIRED_COLUMNS = ("query_id", "input_query", "output_answer")
 _METRIC = re.compile(r"^(?:\S+_metric|main_metric)$")
-
-
-def _missing(value: object) -> bool:
-    return value is None or (isinstance(value, float) and math.isnan(value)) or str(value).strip() == ""
 
 
 def validate_flat_canon(
@@ -21,7 +19,7 @@ def validate_flat_canon(
         if name in frame.columns:
             positions = [
                 index for index, value in enumerate(frame[name].tolist())
-                if _missing(value)
+                if blank(value)
             ]
             if positions:
                 missing_values[name] = {
@@ -38,7 +36,7 @@ def validate_flat_canon(
             continue
         if _METRIC.match(str(name)):
             bad = sum(
-                not _missing(value)
+                not blank(value)
                 and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)))
                 for value in frame[name].tolist()
             )
@@ -48,7 +46,7 @@ def validate_flat_canon(
     if "query_id" in frame.columns:
         present_ids = [
             value for value in frame["query_id"].tolist()
-            if not _missing(value)
+            if not blank(value)
         ]
         if session_scoped:
             identity_keys = [
@@ -59,7 +57,7 @@ def validate_flat_canon(
                     str(value),
                 )
                 for position, value in enumerate(frame["query_id"].tolist())
-                if not _missing(value)
+                if not blank(value)
             ]
         else:
             identity_keys = [(type(value).__name__, str(value)) for value in present_ids]
@@ -83,7 +81,7 @@ def validate_flat_canon(
         for position, (group, index) in enumerate(
             zip(frame["reference_group_id"].tolist(), frame["turn_index"].tolist())
         ):
-            if _missing(group):
+            if blank(group):
                 blank_groups.append(position)
                 continue
             if isinstance(index, bool) or not isinstance(index, Integral) or index < 1:

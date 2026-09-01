@@ -17,6 +17,7 @@ import pandas as pd
 from .errors import NotEvaluableError
 from .metric.engine import source_values
 from .models import MeasurementPlan, ResolvedLayout
+from .transform.canon import reference_answer_names
 from .transform.values import blank, slug
 
 FLAT_SHEET = "Вариант для отд. запросов"
@@ -24,7 +25,7 @@ DIALOGUE_SHEET = "Вариант для диалога"
 
 _METRIC_ROLES = {"final_score", "criterion", "assessor_vote"}
 _LABEL_ROLES = {"prediction": "output_answer", "target": "reference_answer"}
-# Колонки спецификации с фиксированным местом; остальные (reference_answer,
+# Колонки спецификации с фиксированным местом; остальные (reference_answer(_N),
 # [module]_*, *_metric) идут между ними в физическом порядке колонок корзины.
 _HEAD = (
     "solution_version",
@@ -93,8 +94,9 @@ def _role_names(layout: ResolvedLayout) -> dict[str, str]:
     if isinstance(output, dict):
         for source in output.get("coalesce", [output.get("source")]):
             names[_letter(layout, source)] = "output_answer"
-    for index, source in enumerate(roles.get("reference_answers", []), start=1):
-        names[_letter(layout, source)] = "reference_answer" if index == 1 else f"reference_answer_{index}"
+    references = roles.get("reference_answers", [])
+    for name, source in zip(reference_answer_names(len(references)), references):
+        names[_letter(layout, source)] = name
     if layout.weight:
         names[_letter(layout, layout.weight["source"])] = "input_query_count"
     if layout.grouping["kind"] == "column":
@@ -180,8 +182,8 @@ def _session_values(frame: pd.DataFrame, layout: ResolvedLayout) -> list[object]
 def _spec_columns(names: list[tuple[str, str]]) -> list[str]:
     """Колонки спецификации в порядке публикации (без dialogue).
 
-    Колонки без фиксированного места (reference_answer, `[module]_*`, `*_metric`)
-    идут в физическом порядке колонок корзины: Z перед AA.
+    Колонки без фиксированного места (reference_answer(_N), `[module]_*`,
+    `*_metric`) идут в физическом порядке колонок корзины: Z перед AA.
     """
     ordered = sorted(names, key=lambda item: (len(item[0]), item[0]))
     middle = [name for _column_id, name in ordered if name not in _HEAD and name not in _TAIL]

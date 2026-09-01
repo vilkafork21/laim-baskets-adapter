@@ -1,12 +1,21 @@
 """Поиск одной книги и трёх документов без опоры на семантику имён файлов."""
 
+import hashlib
+import logging
 import zipfile
 from pathlib import Path
 
 from ..errors import PackageError
-from ..hashing import sha256_file
+
+
+logger = logging.getLogger(__name__)
 
 _TXT_INSTRUCTION_NAME = "assessor_instruction.txt"
+
+
+def _sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _ooxml_kind(path: Path) -> str:
@@ -47,11 +56,11 @@ def scan_package(input_path: str | Path) -> dict[str, object]:
     documents: list[str] = []
     for path in paths:
         kind = classify_file(path)
+        logger.debug("Файл %s классифицирован как %s (%d байт)", path.name, kind, path.stat().st_size)
         files.append({
             "name": path.name,
             "kind": kind,
-            "size": path.stat().st_size,
-            "sha256": sha256_file(path),
+            "sha256": _sha256(path),
         })
         if kind == "basket_xlsx":
             baskets.append(path.name)

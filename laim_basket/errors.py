@@ -44,22 +44,9 @@ class NotEvaluableError(BasketError):
     reason_code = "not_evaluable"
 
 
-# Низкоуровневые имена transform сохранены как алиасы, а не отдельные контракты.
-class ProfileError(LayoutError):
-    pass
+class AmbiguousBaselineError(NotEvaluableError):
+    reason_code = "ambiguous_baseline"
 
 
-class ValueMapError(LayoutError):
-    pass
-
-
-class PassportError(MeasurementPlanError):
-    pass
-
-
-class MetricUnresolvableError(NotEvaluableError):
-    pass
-
-
-class MetricError(NotEvaluableError):
-    pass
+class SpecError(BasketError):
+    reason_code = "spec_error"

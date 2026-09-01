@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import logging
 import re
@@ -19,6 +20,11 @@ from laim_basket.pipeline import run_package
 from laim_basket.reading.package_scan import classify_file
 
 logger = logging.getLogger(__name__)
+
+# Нода умирала в проде SIGSEGV без трейсбека. faulthandler печатает
+# в stderr стеки всех потоков в момент фатального сигнала — платформа
+# показывает stderr в логе ноды, и место смерти становится видно.
+faulthandler.enable()
 
 _PORT_FILES = {
     "test_set": {"basket_xlsx": "test_set.xlsx"},
@@ -103,18 +109,11 @@ def _monitoring_metric(result: RunResult) -> dict[str, object]:
             "reason": result.km.get("reason", "MeasurementPlan не построен"),
             "reason_code": result.km.get("reason_code"),
         }
-    if result.status != "computed" or not isinstance(result.km.get("main_metric"), dict):
-        return {
-            **contract,
-            "status": "not_computable",
-            "basket_id": plan.basket_id,
-            "assessment_mode": plan.assessment_mode,
-            "reason": result.km.get("reason", "КМ не вычислена"),
-            "reason_code": result.km.get("reason_code"),
-        }
-    metric = result.km["main_metric"]
-    recomputed_value, recomputed_scale = _normalized(metric["recomputed_value"], plan.scale)
-    if plan.reported_value is None:
+    # Отсутствие КМ в отчёте о валидации — специфичная деградация (со своим
+    # baseline-блоком), проверяется до общего not_computable по статусу.
+    if plan.reported_value is None and isinstance(result.km.get("main_metric"), dict):
+        recomputed_value, recomputed_scale = _normalized(
+            result.km["main_metric"]["recomputed_value"], plan.scale)
         return {
             **contract,
             "status": "not_computable",
@@ -132,9 +131,18 @@ def _monitoring_metric(result: RunResult) -> dict[str, object]:
                 "reconciliation": result.km["reconciliation"]["status"],
             },
         }
+    if result.status != "computed" or not isinstance(result.km.get("main_metric"), dict):
+        return {
+            **contract,
+            "status": "not_computable",
+            "basket_id": plan.basket_id,
+            "assessment_mode": plan.assessment_mode,
+            "reason": result.km.get("reason", "КМ не вычислена"),
+            "reason_code": result.km.get("reason_code"),
+        }
+    metric = result.km["main_metric"]
+    recomputed_value, recomputed_scale = _normalized(metric["recomputed_value"], plan.scale)
     baseline_value, baseline_scale = _normalized(plan.reported_value, plan.scale)
-    if baseline_scale != recomputed_scale:
-        raise PackageError("Baseline и recomputed value имеют разные шкалы")
     return {
         **contract,
         "status": "computed",
@@ -211,10 +219,18 @@ def main(
     test_set: str | Path,
     development_report: str | Path,
     assessor_instruction: str | Path,
-    model_id: str = "minimax-m2.5",
+    model_id: str = "glm-5.2",
     sheet_name: str = "",
 ):
     """Запустить полный laim-basket внутри одной Sber DS-ноды."""
+    # Платформа не настраивает logging: без обработчика записи INFO из
+    # laim_basket не доходят до лога ноды, а debug-каталог гибнет с контейнером.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logger.info(
+        "Старт ноды: модель %r, лист %r",
+        model_id, sheet_name or "автоопределение",
+    )
     values = {
         "validation_report": validation_report,
         "test_set": test_set,
@@ -228,13 +244,13 @@ def main(
     work_dir = Path(tempfile.mkdtemp(prefix="laim-basket-sberds-"))
     package = _prepare_package(work_dir, artifacts)
     out_dir = work_dir / "result"
-    config = llm_config("contour")
+    config = llm_config()
     if model_id:
         config = replace(config, model=model_id)
     client = LlmClient(config, out_dir / "debug")
     try:
         result = run_package(
-            package, out_dir, llm_preset="contour", client=client, sheet_name=sheet_name
+            package, out_dir, client=client, sheet_name=sheet_name
         )
     except BasketError as exc:
         # Платформа показывает только str(exc), а debug-каталог гибнет вместе
@@ -245,9 +261,16 @@ def main(
             json.dumps(exc.details, ensure_ascii=False, default=str)[:4000],
         )
         raise
+    metric = _monitoring_metric(result)
+    logger.info(
+        "Порты: monitoring_metric.status=%s%s, строк reference_umr %d",
+        metric["status"],
+        f" ({metric['reason_code']})" if metric.get("reason_code") else "",
+        len(result.umr.frame),
+    )
     return {
         "reference_umr": _parquet_safe(result.umr.frame),
-        "monitoring_metric": _monitoring_metric(result),
-        "km_result": result.km,
+        "monitoring_metric": metric,
+        "km_result": result.report,
         "umr_artifact": str(out_dir / result.excel_name),
     }

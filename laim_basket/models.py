@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -16,8 +15,6 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class RunContext:
     basket_id: str
-    package_dir: Path
-    basket_path: Path
     file_hashes: dict[str, str]
     sheets: dict[str, RawSheet]
     documents: tuple[dict[str, object], ...]
@@ -27,7 +24,6 @@ class RunContext:
 class ResolvedLayout:
     basket_id: str
     sheet_name: str
-    ignored_sheets: tuple[str, ...]
     header_rows: tuple[int, ...]
     first_data_row: int
     last_data_row: int
@@ -38,7 +34,6 @@ class ResolvedLayout:
     evidence: dict[str, str]
     column_names: dict[str, str]
     formula_rows: dict[str, tuple[int, ...]]
-    row_ledger: tuple[dict[str, object], ...]
     region: TableRegion = field(repr=False, compare=False)
 
     def transform_config(self) -> dict[str, object]:
@@ -55,7 +50,6 @@ class ResolvedLayout:
             "layout_version": "laim-layout.v1",
             "basket_id": self.basket_id,
             "sheet_name": self.sheet_name,
-            "ignored_sheets": list(self.ignored_sheets),
             "header_rows": list(self.header_rows),
             "first_data_row": self.first_data_row,
             "last_data_row": self.last_data_row,
@@ -66,7 +60,6 @@ class ResolvedLayout:
             "evidence": self.evidence,
             "column_names": self.column_names,
             "formula_rows": {key: list(value) for key, value in self.formula_rows.items()},
-            "row_ledger": list(self.row_ledger),
         }
 
 
@@ -74,7 +67,6 @@ class ResolvedLayout:
 class MeasurementPlan:
     basket_id: str
     metric_name: str
-    document_roles: dict[str, str]
     assessment_mode: str
     method: str
     sources: tuple[dict[str, object], ...]
@@ -87,7 +79,6 @@ class MeasurementPlan:
     precision: int
     reported_value: Decimal | None
     reported_raw: str | None
-    reported_span_id: str | None
     evidence: dict[str, tuple[str, ...]]
 
     @property
@@ -100,13 +91,11 @@ class MeasurementPlan:
             reported = {
                 "value": str(self.reported_value),
                 "raw": self.reported_raw,
-                "span_id": self.reported_span_id,
             }
         return {
             "plan_version": "laim-measurement-plan.v2",
             "basket_id": self.basket_id,
             "metric_name": self.metric_name,
-            "document_roles": self.document_roles,
             "assessment_mode": self.assessment_mode,
             "score": {
                 "method": self.method,
@@ -133,3 +122,5 @@ class RunResult:
     km: dict[str, object]
     excel_name: str
     measurement_plan: MeasurementPlan | None = None
+    # Журнал прогона laim-run-report.v1 — содержимое порта km_result.
+    report: dict[str, object] = field(default_factory=dict)

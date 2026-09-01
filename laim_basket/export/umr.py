@@ -37,11 +37,10 @@ def _write_frame(workbook: Workbook, title: str, frame: pd.DataFrame) -> None:
                 cell.data_type = "s"
 
 
-def export_umr_workbook(umr: PublishedUmr, path: str | Path) -> dict[str, object]:
+def export_umr_workbook(umr: PublishedUmr, path: str | Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
     workbook.remove(workbook.active)
     _write_frame(workbook, umr.sheet_name, umr.frame)
     workbook.save(path)
-    return {"sheet": umr.sheet_name, "columns": list(umr.frame.columns), "rows": len(umr.frame)}
