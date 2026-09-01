@@ -101,6 +101,7 @@ def run_package(
     started = time.monotonic()
     context = tasks.build_run_context(input_path)
     journal.set_inputs(context.file_hashes)
+    tasks.check_report_identity(context, journal)
     journal.stage("read", "ok", _ms(started))
     llm = client or LlmClient(llm_config(), debug)
 

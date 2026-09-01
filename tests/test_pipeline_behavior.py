@@ -150,3 +150,25 @@ def test_layout_failure_retries_spare_sheet(tmp_path):
     assert result.status == "computed"
     assert result.report["decisions"]["sheet"] == "Плоский"
 
+
+
+def test_foreign_validation_report_is_flagged(tmp_path):
+    # Отчёт о валидации другого агента: baseline берётся из него как есть,
+    # но журнал обязан это показать (аудит LAIM-0188, LAIM-0040).
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "a", "m"], ["в1", "о1", 1], ["в2", "о2", 0]]}},
+        validation=("Отчёт о валидации агента CI09000002", "Accuracy равна 0.5"))
+    result = run_package(package, tmp_path / "out",
+                          client=FakeClient([layout_answer(), metric_answer()]))
+    assert result.status == "computed" and result.report["km"]["value"] == 0.5
+    warning = next(w for w in result.report["warnings"] if w["code"] == "report_identity_mismatch")
+    assert "CI09000002" in warning["message"] and "CI09000001" in warning["message"]
+
+
+def test_matching_validation_report_is_not_flagged(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "a", "m"], ["в1", "о1", 1], ["в2", "о2", 0]]}},
+        validation=("Отчёт о валидации агента ci09000001", "Accuracy равна 0.5"))
+    result = run_package(package, tmp_path / "out",
+                          client=FakeClient([layout_answer(), metric_answer()]))
+    assert [w["code"] for w in result.report["warnings"]] == []
