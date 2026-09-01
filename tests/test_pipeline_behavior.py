@@ -225,3 +225,18 @@ def test_matching_validation_report_is_not_flagged(tmp_path):
     result = run_package(package, tmp_path / "out",
                           client=FakeClient([layout_answer(), metric_answer()]))
     assert [w["code"] for w in result.report["warnings"]] == []
+
+
+def test_percent_point_scores_publish_ratio_with_warning(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "a", "m"], ["в1", "о1", 70], ["в2", "о2", 100]]}},
+        validation=("Доля верных ответов составила 85%",))
+    result = run_package(package, tmp_path / "out", client=FakeClient([
+        layout_answer(),
+        metric_answer(scale="percent",
+                      reported_value={"state": "declared", "value": 85,
+                                       "raw": "85%"})]))
+    assert result.umr.frame["main_metric"].tolist() == [0.7, 1.0]
+    assert result.report["km"]["value"] == 85.0
+    assert result.report["km"]["reconciliation"] == "match"
+    assert [w["code"] for w in result.report["warnings"]] == ["score_domain_percent"]

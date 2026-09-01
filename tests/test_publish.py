@@ -509,11 +509,11 @@ def test_value_map_criterion_is_published_as_number(tmp_path):
 
 
 def test_published_metric_values_are_normalized_numbers(tmp_path):
-    layout, frame = _materialize(tmp_path, ["Q", "A", "score"], [["q1", "a1", "50%"], ["q2", "a2", "1,5"]], _proposal({
+    layout, frame = _materialize(tmp_path, ["Q", "A", "score"], [["q1", "a1", "50%"], ["q2", "a2", "0,75"]], _proposal({
         "input_query": "A", "output_answer": "B",
     }))
-    frame["main_metric"] = [0.5, 1.5]
+    frame["main_metric"] = [0.5, 0.75]
     published = publish_umr(frame, layout, _plan("qa", [_source("C", "final_score")]))
-    assert published.frame["score_metric"].tolist() == [0.5, 1.5]
+    assert published.frame["score_metric"].tolist() == [0.5, 0.75]
     assert all(isinstance(value, float) for value in published.frame["score_metric"])
     assert Decimal("0.5") == Decimal(str(published.frame["score_metric"].iloc[0]))

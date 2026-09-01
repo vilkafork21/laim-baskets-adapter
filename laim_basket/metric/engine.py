@@ -70,9 +70,10 @@ _PERCENT_DOMAIN_MAX = Decimal(100)
 
 
 def _percent_domain(values: list[object], column_id: str) -> list[object] | None:
-    """Оценки в процентных пунктах (0-100 без знака %) при шкале percent
-    приводятся к долям; иначе main_metric ушёл бы потребителям на 0-100,
-    а пересчёт КМ — умноженным на 100 (аудит LAIM-0189)."""
+    """Оценки в процентных пунктах (0-100 без знака %) при шкале доли
+    (percent или ratio) приводятся к долям; иначе main_metric ушёл бы
+    потребителям на 0-100, а пересчёт КМ — умноженным на 100 (LAIM-0189).
+    Шкала raw (оценка 0-2 и подобные) не трогается."""
     present = [value for value in values if value is not None]
     if not present or max(present) <= 1:
         return None
@@ -94,7 +95,7 @@ def _sources(frame, layout: ResolvedLayout, plan: MeasurementPlan):
         normalizer = _normalizer(source)
         values = [normalizer(value) for value in frame[layout.column_names[column_id]].tolist()]
         normalized = None
-        if plan.scale == "percent" and source["normalization"] == "numeric":
+        if plan.scale in ("percent", "ratio") and source["normalization"] == "numeric":
             normalized = _percent_domain(values, column_id)
         yield column_id, normalized if normalized is not None else values, normalized is not None
 
@@ -215,8 +216,8 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
     percent_columns = [column_id for column_id, _, normalized in sources if normalized]
     if percent_columns:
         logger.warning(
-            "Колонки %s несут оценки в процентных пунктах при шкале percent — "
-            "приведены к долям делением на 100", percent_columns,
+            "Колонки %s несут оценки в процентных пунктах при шкале %s — "
+            "приведены к долям делением на 100", percent_columns, plan.scale,
         )
     records = _unit_records(frame, values, plan)
     scores = [_score(record, plan) for record in records]
