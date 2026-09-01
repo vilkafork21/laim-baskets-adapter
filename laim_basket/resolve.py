@@ -163,6 +163,26 @@ def _prove_roles(roles: dict, grouping: dict, blob: dict | None) -> None:
         raise LayoutError("grouping=column требует column")
 
 
+def _prove_references(region, roles: dict) -> None:
+    """Эталон — текст. Колонка, где все заполненные ячейки числовые, — это
+    оценка (голос разметчика), и как эталон она заблокирует план метрики
+    без шанса на repair: роли к тому моменту заморожены."""
+    for source in roles["reference_answers"]:
+        values = [row[region.columns.index(source)] for row in region.rows]
+        present = [value for value in values if not blank(value)]
+        if present and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in present
+        ):
+            raise LayoutError(
+                "Колонка эталона содержит только числовые значения — это оценка, "
+                "а не reference_answer",
+                column=source, samples=[str(value) for value in present[:3]],
+                repair_hint="убери колонку из reference_answers; числовые оценки "
+                            "назначает план метрики",
+            )
+
+
 def _prove_weight(sheet: RawSheet, region, weight: dict | None) -> None:
     if weight is None:
         return
@@ -262,6 +282,7 @@ def resolve_layout(proposal: dict, sheets: dict[str, RawSheet], basket_id: str,
     region = build_region(sheet, header_rows, last_data0 + 1)
     roles, grouping, blob, weight = _materialize(proposal, sheet, region)
     _prove_roles(roles, grouping, blob)
+    _prove_references(region, roles)
     _prove_weight(sheet, region, weight)
     if grouping["kind"] == "merged_rows" and not vertical_data_merge:
         raise LayoutError("grouping=merged_rows не подтвержден vertical merge")
