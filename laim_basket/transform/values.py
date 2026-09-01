@@ -11,7 +11,9 @@ def blank(value: object) -> bool:
     ) or str(value).strip() == ""
 
 _SPACES = re.compile(r"[\s  ]+")
-_SLUG_JUNK = re.compile(r"[^a-zа-яё0-9]+")
+# Любая буква любого алфавита остаётся в имени колонки: заголовок 质量 не
+# должен вырождаться в metric_metric и сталкиваться с соседями (LAIM-0072).
+_SLUG_JUNK = re.compile(r"[\W_]+")
 
 
 def slug(name: str) -> str:
