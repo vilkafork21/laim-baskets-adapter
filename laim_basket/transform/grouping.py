@@ -1,6 +1,7 @@
 """Детерминированная группировка строк и развёртка диалог-блоба без потерь."""
 
 import ast
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -204,6 +205,82 @@ def _dialogue_literal(value: object) -> list[tuple[str, str, str | None]] | None
     return turns
 
 
+# Роли сторон в JSON-экспортах чатов; маркеры из разметки добавляются к ним.
+_QUESTION_ROLES = {"user", "human", "client", "customer", "клиент", "пользователь"}
+_ANSWER_ROLES = {"assistant", "agent", "bot", "ai", "operator",
+                 "агент", "ассистент", "бот", "оператор"}
+_SERVICE_ROLES = {"system", "tool", "developer"}
+_ROLE_KEYS = ("role", "speaker", "author", "from")
+_TEXT_KEYS = ("content", "text", "message")
+
+
+def _parse_container(value: object) -> object | None:
+    if isinstance(value, (list, tuple)):
+        return value
+    text = str(value)
+    for loader in (json.loads, ast.literal_eval):
+        try:
+            return loader(text)
+        except (ValueError, SyntaxError, TypeError):
+            continue
+    return None
+
+
+def _dialogue_messages(
+    parsed: object, question_marker: str, answer_marker: str
+) -> list[tuple[str, str | None]]:
+    """JSON-массив сообщений {role, content}: реплики клиента и агента
+    складываются в пары вопрос-ответ; служебные роли пропускаются, приветствие
+    агента до первого вопроса — тоже (LAIM-0073)."""
+    if not isinstance(parsed, (list, tuple)) or not parsed:
+        return []
+    if not all(isinstance(message, dict) for message in parsed):
+        return []
+    sides = {question_marker.casefold(): "question", answer_marker.casefold(): "answer"}
+    sides.update({role: "question" for role in _QUESTION_ROLES})
+    sides.update({role: "answer" for role in _ANSWER_ROLES})
+    pairs: list[tuple[str, str | None]] = []
+    question: str | None = None
+    answer: str | None = None
+    for message in parsed:
+        role = next((message[key] for key in _ROLE_KEYS if key in message), None)
+        text = next((message[key] for key in _TEXT_KEYS if key in message), None)
+        if role is None or text is None:
+            return []
+        key = str(role).strip().casefold()
+        if key in _SERVICE_ROLES:
+            continue
+        side = sides.get(key)
+        if side is None:
+            return []
+        text = str(text).strip()
+        if side == "question":
+            if answer is not None:
+                pairs.append((question, answer))
+                question, answer = None, None
+            question = text if question is None else f"{question}\n{text}"
+        elif question is not None:
+            answer = text if answer is None else f"{answer}\n{text}"
+    if question is not None:
+        pairs.append((question, answer))
+    return [(q, a) for q, a in pairs if q]
+
+
+def _dialogue_pairs(parsed: object) -> list[tuple[str, str | None]]:
+    """Список пар (вопрос, ответ) без идентификаторов реплик."""
+    if not isinstance(parsed, (list, tuple)) or not parsed:
+        return []
+    pairs = []
+    for item in parsed:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            return []
+        question, answer = item
+        if question is None or not str(question).strip():
+            return []
+        pairs.append((str(question), None if answer is None else str(answer)))
+    return pairs
+
+
 def _unroll_blob(region: TableRegion, blob: dict[str, object]) -> GroupedTable:
     column = str(blob["column"])
     index = region.columns.index(column)
@@ -223,11 +300,16 @@ def _unroll_blob(region: TableRegion, blob: dict[str, object]) -> GroupedTable:
         elif value is None:
             pairs = []
         else:
-            pairs = _split_blob(
-                _blob_text(value, container, question_marker, answer_marker),
-                question_marker,
-                answer_marker,
-                preserve_payload=container == "python_list",
+            parsed = _parse_container(value)
+            pairs = (
+                _dialogue_messages(parsed, question_marker, answer_marker)
+                or _dialogue_pairs(parsed)
+                or _split_blob(
+                    _blob_text(value, container, question_marker, answer_marker),
+                    question_marker,
+                    answer_marker,
+                    preserve_payload=container == "python_list",
+                )
             )
         if not pairs:
             invalid.append({"row": source_row, "text": str(value)[:120]})

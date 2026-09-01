@@ -150,3 +150,56 @@ def test_layout_failure_retries_spare_sheet(tmp_path):
     assert result.status == "computed"
     assert result.report["decisions"]["sheet"] == "Плоский"
 
+
+
+def _blob_layout(container: str, question: str, answer: str):
+    return layout_answer(roles={"query_id": None, "session_id": None,
+                                "input_query": "A", "output_answer": None,
+                                "scenario": None, "assessor_id": None,
+                                "reference_answers": []},
+                         grouping={"kind": "blob_row", "column": None},
+                         dialogue_blob={"column": "A", "container": container,
+                                        "question_marker": question,
+                                        "answer_marker": answer})
+
+
+def _score_plan():
+    return metric_answer(sources=[{"column_id": "B", "role": "final_score",
+                                   "normalization": "numeric", "polarity": "direct"}])
+
+
+def test_blob_dialogue_role_dicts_expand_turns(tmp_path):
+    # Самый частый экспорт чатов: JSON-массив сообщений role/content (LAIM-0073).
+    blob = ('[{"role": "user", "content": "привет"}, '
+            '{"role": "assistant", "content": "здравствуйте"}, '
+            '{"role": "user", "content": "вопрос"}, '
+            '{"role": "assistant", "content": "ответ"}]')
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["messages", "m"], [blob, 1],
+        ['[{"role": "user", "content": "ещё"}, {"role": "assistant", "content": "снова"}]', 0]]}})
+    result = run_package(package, tmp_path / "out", client=FakeClient([
+        _blob_layout("python_list", "user", "assistant"), _score_plan()]))
+    turns = ast.literal_eval(result.umr.frame["dialogue"].iloc[0])
+    assert [(turn[1], turn[2]) for turn in turns] == [("привет", "здравствуйте"), ("вопрос", "ответ")]
+    assert result.status == "computed" and result.report["dropped_rows"] == {}
+
+
+def test_blob_dialogue_pairs_expand_turns(tmp_path):
+    blob = "[('привет', 'здравствуйте'), ('вопрос', 'ответ')]"
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["dialog", "m"], [blob, 1], ["[('ещё', 'снова')]", 0]]}})
+    result = run_package(package, tmp_path / "out", client=FakeClient([
+        _blob_layout("python_list", "Q", "A"), _score_plan()]))
+    turns = ast.literal_eval(result.umr.frame["dialogue"].iloc[0])
+    assert [(turn[1], turn[2]) for turn in turns] == [("привет", "здравствуйте"), ("вопрос", "ответ")]
+
+
+def test_blob_dialogue_role_dicts_with_russian_roles(tmp_path):
+    blob = ('[{"speaker": "Клиент", "text": "привет"}, '
+            '{"speaker": "Оператор", "text": "здравствуйте"}]')
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["dialog", "m"], [blob, 1], [blob, 0]]}})
+    result = run_package(package, tmp_path / "out", client=FakeClient([
+        _blob_layout("python_list", "Клиент", "Оператор"), _score_plan()]))
+    turns = ast.literal_eval(result.umr.frame["dialogue"].iloc[0])
+    assert [(turn[1], turn[2]) for turn in turns] == [("привет", "здравствуйте")]
