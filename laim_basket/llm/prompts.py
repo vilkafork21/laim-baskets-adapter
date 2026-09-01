@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from .. import defaults
 from .schemas import LAYOUT_SCHEMA, METRIC_SCHEMA
+
+logger = logging.getLogger(__name__)
 
 _LAYOUT_SYSTEM = """Ты размечаешь эталонную корзину GenAI-агента: одна XLSX-книга \
 и три документа (отчёт о валидации, отчёт о разработке, инструкция ассессора).
@@ -54,7 +57,17 @@ def _document_block(document: dict) -> str:
     body = "\n".join(
         f"p{index:03d}: {text}"
         for index, text in enumerate(document["paragraphs"], start=1)
-    )[: defaults.DOCUMENT_CHAR_CAP]
+    )
+    cap = defaults.DOCUMENT_CHAR_CAP
+    if len(body) > cap:
+        # Модель не увидит хвост документа; КМ в отчётах о валидации нередко
+        # объявлена таблицей ближе к концу — срез обязан быть виден в логе.
+        logger.warning(
+            "Документ %s (%s) обрезан до %d символов из %d (%d абзацев): "
+            "модель не видит его конец",
+            document["port"], document["name"], cap, len(body), len(document["paragraphs"]),
+        )
+        body = body[:cap]
     return f"<{document['port']}>\n{body}\n</{document['port']}>"
 
 

@@ -39,3 +39,25 @@ def test_metric_prompt_carries_inventory_and_priority_rule():
     user = messages[-1]["content"]
     assert "mark" in user
     assert "отчёт о валидации" in messages[0]["content"].lower()
+
+
+def test_truncated_document_is_logged(monkeypatch, caplog):
+    import logging
+
+    from laim_basket import defaults
+
+    monkeypatch.setattr(defaults, "DOCUMENT_CHAR_CAP", 40)
+    long_docs = ({"port": "validation_report", "name": "validation_report.docx",
+                  "paragraphs": tuple(f"абзац {index} " * 3 for index in range(10))},)
+    with caplog.at_level(logging.WARNING):
+        messages = layout_messages({"sheets": []}, long_docs, "", frozenset())
+    assert "validation_report" in caplog.text and "обрезан" in caplog.text
+    assert "абзац 9" not in messages[-1]["content"]
+
+
+def test_short_document_is_not_logged(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        layout_messages({"sheets": []}, DOCS, "", frozenset())
+    assert "обрезан" not in caplog.text
