@@ -2,7 +2,12 @@
 
 BLOB_MARKER_PATTERN = r"([A-ZА-ЯЁ][A-ZА-ЯЁ_]{1,15}):"
 
-AGGREGATE_FORMULA_PATTERN = r"SUM|COUNT|AVERAGE|СУММ|СЧЁТ|СЧЕТ|СРЗНАЧ"
+# Функции итоговой строки Excel: автосумма ставит SUBTOTAL на фильтрованных
+# таблицах, MIN/MAX/MEDIAN — обычные сводки по колонке оценок (LAIM-0191).
+AGGREGATE_FORMULA_PATTERN = (
+    r"SUM|COUNT|AVERAGE|SUBTOTAL|MIN|MAX|MEDIAN"
+    r"|СУММ|СЧЁТ|СЧЕТ|СРЗНАЧ|ПРОМЕЖУТОЧН|МИН|МАКС|МЕДИАН"
+)
 
 ERROR_PAYLOAD_CHAR_CAP = 2_000
 MAX_TOKENS_CEILING = 65_536

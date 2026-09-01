@@ -105,3 +105,20 @@ def test_unusable_session_source_degrades_to_group_index(tmp_path):
     assert "пропуски" in identity["reason"]
     assert conversion["umr_validation"]["status"] == "passed"
 
+
+
+def test_footer_label_in_query_column_is_not_data(tmp_path):
+    # Метка «ИТОГО» под запросами при SUBTOTAL/СУММ в колонке оценки — футер
+    # таблицы, а не единица оценки (аудит LAIM-0191).
+    rows = [["q", "a", "m"], ["в1", "о1", 1], ["в2", "о2", 0],
+            ["ИТОГО", None, "=SUBTOTAL(9,C2:C3)"]]
+    layout = resolve_layout(layout_answer(), _sheets(tmp_path, rows),
+                            BASKET, "", frozenset())
+    assert layout.last_data_row == 3
+
+
+def test_row_formula_row_stays_data(tmp_path):
+    rows = [["q", "a", "m"], ["в1", "о1", 1], ["в2", "о2", "=IF(A3=\"в2\",1,0)"]]
+    layout = resolve_layout(layout_answer(), _sheets(tmp_path, rows),
+                            BASKET, "", frozenset())
+    assert layout.last_data_row == 3

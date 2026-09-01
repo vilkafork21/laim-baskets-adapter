@@ -196,10 +196,12 @@ def _data_bounds(sheet: RawSheet, proposal: dict, first_data0: int) -> tuple[int
     """Границы данных по непустым input_query, merge и формульным итогам."""
     query_index = _column_index(proposal["roles"]["input_query"], sheet.n_cols,
                                 "roles.input_query")
-    aggregate_cells = vertical_aggregate_cells(sheet.formulas)
+    # Строка с вертикальным агрегатом в любой колонке — футер таблицы, даже
+    # если под запросами стоит метка «ИТОГО».
+    footer_rows = {row for row, _column in vertical_aggregate_cells(sheet.formulas)}
     candidates = [
         row for row in range(first_data0, sheet.n_rows)
-        if not blank(sheet.grid[row][query_index]) and (row, query_index) not in aggregate_cells
+        if not blank(sheet.grid[row][query_index]) and row not in footer_rows
     ]
     for row1, col1, row2, _col2 in sheet.merged:
         if row1 >= first_data0 and col1 <= query_index <= _col2 and not blank(sheet.grid[row1][col1]):
