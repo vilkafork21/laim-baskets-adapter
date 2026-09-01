@@ -1,0 +1,180 @@
+{
+  "id": "0e854a93-94f1-4ddb-b31d-a6ea4ef9bb08",
+  "name": "LAIM baskets adapter",
+  "description": "Преобразование test set и трех документов в канонический UMR и контракт КМ",
+  "fullDescription": "Одна атомарная нода: определение структуры, построение UMR, MeasurementPlan и детерминированный расчет КМ.",
+  "ui": {
+    "settings": [
+      {
+        "page": "General",
+        "title": "LLM",
+        "components": [
+          {
+            "type": "form",
+            "label": "Модель контура",
+            "config": {
+              "components": [
+                {
+                  "parameter": "model_id",
+                  "label": "Model ID",
+                  "uiComponent": "input",
+                  "type": "string",
+                  "defaultValue": "minimax-m2.5"
+                },
+                {
+                  "parameter": "sheet_name",
+                  "label": "Sheet name",
+                  "uiComponent": "input",
+                  "type": "string",
+                  "defaultValue": ""
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "result": {
+      "title": "Results",
+      "components": []
+    }
+  },
+  "ports": [
+    {
+      "name": "validation_report",
+      "label": "Validation report",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "description": "DOCX-отчет о валидации",
+      "required": true,
+      "order": 1,
+      "getPortAsLocalPath": true
+    },
+    {
+      "name": "test_set",
+      "label": "Test set",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "description": "XLSX-корзина",
+      "required": true,
+      "order": 2,
+      "getPortAsLocalPath": true
+    },
+    {
+      "name": "development_report",
+      "label": "Development report",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "description": "DOCX-отчет о разработке",
+      "required": true,
+      "order": 3,
+      "getPortAsLocalPath": true
+    },
+    {
+      "name": "assessor_instruction",
+      "label": "Assessor instruction",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "description": "Инструкция ассесора в DOCX или UTF-8 TXT",
+      "required": true,
+      "order": 4,
+      "getPortAsLocalPath": true
+    },
+    {
+      "name": "reference_umr",
+      "label": "Reference UMR",
+      "in": false,
+      "type": "dataframe",
+      "shape": "shape_dataframe",
+      "description": "Эталонная корзина в формате тестового датасета: лист «Вариант для отд. запросов» либо «Вариант для диалога»",
+      "order": 5
+    },
+    {
+      "name": "monitoring_metric",
+      "label": "Monitoring metric",
+      "in": false,
+      "type": "default",
+      "shape": "shape_model",
+      "description": "Операционный контракт laim-monitoring-metric.v2; assessment_mode детерминирован физической формой корзины",
+      "order": 6
+    },
+    {
+      "name": "km_result",
+      "label": "KM result",
+      "in": false,
+      "type": "default",
+      "shape": "shape_model",
+      "description": "Полный контракт laim-km.v2",
+      "order": 7
+    },
+    {
+      "name": "umr_artifact",
+      "label": "UMR XLSX path",
+      "in": false,
+      "type": "default",
+      "shape": "shape_model",
+      "description": "Локальный путь к UMR XLSX (тот же лист формата тестового датасета)",
+      "order": 8
+    }
+  ],
+  "script": {
+    "type": "python",
+    "baseImageKey": "py312-simple",
+    "deployType": "docker",
+    "runConfiguration": {
+      "libraryDependencies": [
+        "requirements.txt"
+      ],
+      "sourceFiles": [
+        "main.py",
+        "laim_basket/__init__.py",
+        "laim_basket/cli.py",
+        "laim_basket/config.py",
+        "laim_basket/contracts.py",
+        "laim_basket/defaults.py",
+        "laim_basket/errors.py",
+        "laim_basket/evidence/__init__.py",
+        "laim_basket/evidence/sheet_evidence.py",
+        "laim_basket/export/__init__.py",
+        "laim_basket/export/umr.py",
+        "laim_basket/hashing.py",
+        "laim_basket/layout.py",
+        "laim_basket/llm/__init__.py",
+        "laim_basket/llm/client.py",
+        "laim_basket/llm/generate.py",
+        "laim_basket/llm/prompts.py",
+        "laim_basket/llm/structured.py",
+        "laim_basket/measurement.py",
+        "laim_basket/metric/__init__.py",
+        "laim_basket/metric/engine.py",
+        "laim_basket/models.py",
+        "laim_basket/pipeline.py",
+        "laim_basket/publish.py",
+        "laim_basket/reading/__init__.py",
+        "laim_basket/reading/docx_reader.py",
+        "laim_basket/reading/formulas.py",
+        "laim_basket/reading/headers.py",
+        "laim_basket/reading/package_scan.py",
+        "laim_basket/reading/xlsx_reader.py",
+        "laim_basket/transform/__init__.py",
+        "laim_basket/transform/canon.py",
+        "laim_basket/transform/grouping.py",
+        "laim_basket/transform/identity.py",
+        "laim_basket/transform/region.py",
+        "laim_basket/transform/values.py",
+        "laim_basket/umr_schema.py"
+      ],
+      "functionName": "main",
+      "functionParameters": [],
+      "output": {
+        "type": "json",
+        "output": []
+      }
+    }
+  },
+  "shape": "other"
+}

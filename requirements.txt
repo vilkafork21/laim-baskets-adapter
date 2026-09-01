@@ -1,0 +1,5 @@
+# Runtime-зависимости для Python 3.12.
+pandas>=2.0,<3
+openpyxl>=3.1,<4
+jsonschema>=4,<5
+requests>=2.31,<3
