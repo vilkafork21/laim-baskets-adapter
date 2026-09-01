@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .. import defaults
 from ..errors import (
     LayoutError,
     PackageError,
@@ -256,6 +257,14 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
             ) from exc
         # Repair не помог, но кандидат публикуем: отброс меньшинства строк —
         # деградация с учётом, а не падение ноды.
+        dropped_rows = sum(len(rows) for rows in recoverable["dropped"].values())
+        kept_rows = recoverable["frame"]["source_row_id"].nunique()
+        if dropped_rows > (dropped_rows + kept_rows) * defaults.MAX_DROPPED_ROW_SHARE:
+            raise SpecError(
+                "Разметка отбрасывает больше половины строк корзины — обязательные "
+                f"поля спеки не собраны: {exc}",
+                dropped_rows=dropped_rows, kept_rows=int(kept_rows), **exc.details,
+            ) from exc
         for kind, rows in recoverable["dropped"].items():
             journal.dropped(kind, rows)
         resolved.update(proposal=recoverable["proposal"],
