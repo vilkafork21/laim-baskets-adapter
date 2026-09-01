@@ -66,13 +66,37 @@ def _normalizer(source: dict[str, object]):
     return inverted
 
 
+_PERCENT_DOMAIN_MAX = Decimal(100)
+
+
+def _percent_domain(values: list[object], column_id: str) -> list[object] | None:
+    """Оценки в процентных пунктах (0-100 без знака %) при шкале percent
+    приводятся к долям; иначе main_metric ушёл бы потребителям на 0-100,
+    а пересчёт КМ — умноженным на 100 (аудит LAIM-0189)."""
+    present = [value for value in values if value is not None]
+    if not present or max(present) <= 1:
+        return None
+    if max(present) > _PERCENT_DOMAIN_MAX:
+        raise NotEvaluableError(
+            "Оценки колонки выходят за домен percent (0-100)",
+            column_id=column_id, max_value=str(max(present)),
+        )
+    return [None if value is None else value / _PERCENT_DOMAIN_MAX for value in values]
+
+
 def source_values(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> dict[str, list[object]]:
-    result = {}
+    return {column_id: values for column_id, values, _ in _sources(frame, layout, plan)}
+
+
+def _sources(frame, layout: ResolvedLayout, plan: MeasurementPlan):
     for source in plan.sources:
         column_id = source["column_id"]
         normalizer = _normalizer(source)
-        result[column_id] = [normalizer(value) for value in frame[layout.column_names[column_id]].tolist()]
-    return result
+        values = [normalizer(value) for value in frame[layout.column_names[column_id]].tolist()]
+        normalized = None
+        if plan.scale == "percent" and source["normalization"] == "numeric":
+            normalized = _percent_domain(values, column_id)
+        yield column_id, normalized if normalized is not None else values, normalized is not None
 
 
 def _unit_records(frame, values: dict[str, list[object]], plan: MeasurementPlan) -> list[dict[str, object]]:
@@ -186,7 +210,14 @@ def _published_scale(value: Decimal, scale: str) -> Decimal:
 
 
 def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[object, dict[str, object]]:
-    values = source_values(frame, layout, plan)
+    sources = list(_sources(frame, layout, plan))
+    values = {column_id: column_values for column_id, column_values, _ in sources}
+    percent_columns = [column_id for column_id, _, normalized in sources if normalized]
+    if percent_columns:
+        logger.warning(
+            "Колонки %s несут оценки в процентных пунктах при шкале percent — "
+            "приведены к долям делением на 100", percent_columns,
+        )
     records = _unit_records(frame, values, plan)
     scores = [_score(record, plan) for record in records]
     scored = [(record, score) for record, score in zip(records, scores) if score is not None]
@@ -255,6 +286,7 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
             "difference": float(difference) if difference is not None else None,
         },
         "threshold_verdict": verdict,
+        "percent_domain_columns": percent_columns,
         "main_metric": {
             "name": plan.metric_name,
             "value": float(final_value) if final_value is not None else None,
