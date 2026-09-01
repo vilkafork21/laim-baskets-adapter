@@ -240,3 +240,22 @@ def test_percent_point_scores_publish_ratio_with_warning(tmp_path):
     assert result.report["km"]["value"] == 85.0
     assert result.report["km"]["reconciliation"] == "match"
     assert [w["code"] for w in result.report["warnings"]] == ["score_domain_percent"]
+
+
+def test_spare_sheet_layout_failure_keeps_first_sheet_basket(tmp_path):
+    # План метрики не собрался на первом листе, а на запасном (справочнике)
+    # модель не дала разметку вовсе: корзина первого листа всё равно
+    # публикуется как not_computable — нода не умирает.
+    package = make_package(tmp_path, {
+        "Корзина": {"rows": [["q", "a", "m"], ["в1", "о1", 1], ["в2", "о2", 0]]},
+        "Справочник": {"rows": [["Сценарий", "Описание"], ["вход", "про вход"]]},
+    })
+    bad = metric_answer(sources=[{"column_id": "ZZ", "role": "final_score",
+                                   "normalization": "numeric", "polarity": "direct"}])
+    client = FakeClient([layout_answer(sheet_name="Корзина")] + [bad] * 3
+                        + ["не могу разметить справочник"] * 3)
+    result = run_package(package, tmp_path / "out", client=client)
+    assert result.status == "not_computable"
+    assert result.umr.frame["input_query"].tolist() == ["в1", "в2"]
+    assert result.report["decisions"]["sheet"] == "Корзина"
+    assert any(w["code"] == "spec_error" for w in result.report["warnings"])

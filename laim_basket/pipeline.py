@@ -108,12 +108,26 @@ def run_package(
     plan, km, published = None, None, None
     status = "computed"
     rejected: frozenset[str] = frozenset()
+    # Канон первого листа, на котором не собрался план: если запасной лист
+    # не размечается вовсе, корзина публикуется с него как not_computable.
+    fallback: tuple[tasks.LayoutOutcome, BasketError] | None = None
     for attempt in (1, 2):
         stage_started = time.monotonic()
         try:
             outcome = tasks.run_layout(llm, context, journal, sheet_name, rejected)
         except SpecError as exc:
             failed_sheet = exc.details.get("sheet")
+            if fallback is not None:
+                journal.stage("layout", "degraded", _ms(stage_started))
+                journal.warning(exc.reason_code,
+                                f"запасной лист не размечен: {exc}")
+                outcome, cause = fallback
+                journal.decision(sheet=outcome.layout.sheet_name,
+                                 grouping=outcome.layout.grouping["kind"])
+                plan, km = None, _not_computable(context.basket_id, cause)
+                published = publish_umr(outcome.frame, outcome.layout, None)
+                status = "not_computable"
+                break
             if sheet_name or attempt == 2 or len(context.sheets) < 2 or not failed_sheet:
                 raise
             # Симметрия с этапом метрики: несобираемый лист отвергается,
@@ -156,6 +170,7 @@ def run_package(
             )
             if not sheet_name and attempt == 1 and len(context.sheets) > 1:
                 rejected = frozenset({outcome.layout.sheet_name})
+                fallback = (outcome, exc)
                 continue
             # Корзина публикуется всегда, когда канон собран.
             plan, km = None, _not_computable(context.basket_id, exc)
