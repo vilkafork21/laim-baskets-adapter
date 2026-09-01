@@ -178,7 +178,8 @@ WARNING laim_basket.llm.client: layout: попытка 1/3 отклонена �
   `main_metric`, `assessor_id`.
 - **«Вариант для диалога»**: строка = одна сессия. Колонка `dialogue` — список
   троек `(query_id, input_query, output_answer)`, плюс `session_id`,
-  `<имя>_metric`, `main_metric`.
+  `<имя>_metric`, `main_metric`; при взвешенном редьюсере — `input_query_count`
+  (вес сессии, который контракт называет `weight_column`).
 
 Публикуются только канонические имена из словаря спецификации (сырые колонки
 корзины остаются в debug-отчётах). Единственная колонка сверх словаря —

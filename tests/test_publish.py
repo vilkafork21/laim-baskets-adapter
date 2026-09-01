@@ -317,6 +317,38 @@ def test_dialogue_projection_packs_turns_and_keeps_session_columns(tmp_path):
     assert published.dropped_non_constant == ()
 
 
+def test_weighted_dialogue_publishes_weight_column(tmp_path):
+    header = ["D", "Q", "A", "score", "freq"]
+    rows = [["d1", "q1", "a1", 1, 3], [None, "q2", "a2", None, 3], ["d2", "q3", "a3", 0, 1]]
+    layout, frame = _materialize(tmp_path, header, rows, _proposal(
+        {"input_query": "B", "output_answer": "C"},
+        grouping={"kind": "column", "column": "A"}, weight="E",
+    ))
+    frame["main_metric"] = [1.0, 1.0, 0.0]
+    plan = _plan("dialogue", [_source("D", "final_score")], reducer="frequency_weighted_mean")
+
+    published = publish_umr(frame, layout, plan)
+
+    assert list(published.frame.columns) == [
+        "session_id", "dialogue", "input_query_count", "score_metric", "main_metric",
+    ]
+    assert published.frame["input_query_count"].tolist() == [3, 1]
+
+
+def test_unweighted_dialogue_omits_weight_column(tmp_path):
+    header = ["D", "Q", "A", "score", "freq"]
+    rows = [["d1", "q1", "a1", 1, 3], ["d2", "q3", "a3", 0, 1]]
+    layout, frame = _materialize(tmp_path, header, rows, _proposal(
+        {"input_query": "B", "output_answer": "C"},
+        grouping={"kind": "column", "column": "A"}, weight="E",
+    ))
+    frame["main_metric"] = [1.0, 0.0]
+
+    published = publish_umr(frame, layout, _plan("dialogue", [_source("D", "final_score")]))
+
+    assert "input_query_count" not in published.frame
+
+
 def test_dialogue_projection_drops_session_columns_that_vary_inside_dialogue(tmp_path):
     header = ["D", "Тема", "Q", "A", "score"]
     rows = [["d1", "вклад", "q1", "a1", 1], ["d1", "кредит", "q2", "a2", 1]]
