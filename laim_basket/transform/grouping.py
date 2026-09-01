@@ -67,11 +67,14 @@ def _column_groups(region: TableRegion, column: str) -> list[int]:
     index = region.columns.index(column)
     keys: dict[str, int] = {}
     groups, previous = [], None
-    for source_row, row in zip(region.source_rows, region.rows):
+    for row in region.rows:
         value = row[index]
         key = str(value).strip() if value is not None and str(value).strip() else previous
         if key is None:
-            raise LayoutError("Пустая первая группа", row=source_row, column=column)
+            # Строки до первой заливки группы: сентинел -1 станет пустым
+            # reference_group_id — валидация поднимет repair, фолбэк отбросит.
+            groups.append(-1)
+            continue
         previous = key
         keys.setdefault(key, len(keys))
         groups.append(keys[key])

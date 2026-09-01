@@ -96,7 +96,11 @@ def build_canon(
     for name, source in zip(reference_answer_names(len(references)), references):
         data[name] = [_text(value) for value in _column(grouped, source)]
     if grouped.group_index is not None:
-        data["reference_group_id"] = [f"group-{value}" for value in grouped.group_index]
+        # Сентинел -1 (строка вне групп) публикуется пустым: это нарушение
+        # blank_group для валидации, а не фиктивная группа.
+        data["reference_group_id"] = [
+            None if value < 0 else f"group-{value}" for value in grouped.group_index
+        ]
         counters: dict[int, int] = {}
         turn_index = []
         for group in grouped.group_index:

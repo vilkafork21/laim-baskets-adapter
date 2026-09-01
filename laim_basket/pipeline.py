@@ -19,6 +19,7 @@ from .errors import (
     BasketError,
     MeasurementPlanError,
     NotEvaluableError,
+    SpecError,
     StructuredOutputError,
 )
 from .export.umr import export_umr_workbook
@@ -108,7 +109,21 @@ def run_package(
     rejected: frozenset[str] = frozenset()
     for attempt in (1, 2):
         stage_started = time.monotonic()
-        outcome = tasks.run_layout(llm, context, journal, sheet_name, rejected)
+        try:
+            outcome = tasks.run_layout(llm, context, journal, sheet_name, rejected)
+        except SpecError as exc:
+            failed_sheet = exc.details.get("sheet")
+            if sheet_name or attempt == 2 or len(context.sheets) < 2 or not failed_sheet:
+                raise
+            # Симметрия с этапом метрики: несобираемый лист отвергается,
+            # разметка пробуется на запасном.
+            journal.stage("layout", "degraded", _ms(stage_started))
+            journal.warning(
+                exc.reason_code,
+                f"разметка не собрана на листе {failed_sheet!r}: {exc}",
+            )
+            rejected = frozenset({failed_sheet})
+            continue
         journal.stage("layout", "ok", _ms(stage_started))
         journal.decision(sheet=outcome.layout.sheet_name,
                          grouping=outcome.layout.grouping["kind"])

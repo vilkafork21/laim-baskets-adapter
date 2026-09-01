@@ -1,0 +1,152 @@
+"""Поведение конвейера: инварианты спеки на формах корзин + деградации."""
+from __future__ import annotations
+
+import ast
+
+
+from conftest import layout_answer, metric_answer
+from helpers import FakeClient, make_package
+from laim_basket.pipeline import run_package
+
+
+def test_flat_basket_meets_spec_invariants(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "a", "m"], ["в1", "о1", 1], ["в2", "о2", 0]]}})
+    result = run_package(package, tmp_path / "out",
+                          client=FakeClient([layout_answer(), metric_answer()]))
+    frame = result.umr.frame
+    for column in ("query_id", "input_query", "output_answer", "main_metric"):
+        assert column in frame.columns
+    assert result.status == "computed"
+    assert result.report["contract_version"] == "laim-run-report.v1"
+    assert result.report["km"]["reconciliation"] == "match"
+    assert [stage["stage"] for stage in result.report["stages"][:2]] == ["read", "layout"]
+    assert (tmp_path / "out" / "run_report.json").exists()
+    assert (tmp_path / "out" / f"umr_{result.report['basket_id']}.xlsx").exists()
+
+
+def test_merged_dialogue_publishes_triples(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {
+        "rows": [["s", "q", "a", "m"],
+                  [1, "в1", "о1", 1], [None, "в2", "о2", None],
+                  [2, "в3", "о3", 0]],
+        "merges": ["A2:A3", "D2:D3"]}})
+    result = run_package(package, tmp_path / "out", client=FakeClient([
+        layout_answer(roles={"query_id": None, "session_id": "A",
+                              "input_query": "B", "output_answer": "C",
+                              "scenario": None, "assessor_id": None,
+                              "reference_answers": []},
+                       grouping={"kind": "merged_rows", "column": None}),
+        metric_answer(sources=[{"column_id": "D", "role": "final_score",
+                                 "normalization": "numeric",
+                                 "polarity": "direct"}])]))
+    frame = result.umr.frame
+    assert "dialogue" in frame.columns
+    turns = ast.literal_eval(frame["dialogue"].iloc[0])
+    assert len(turns) == 2 and len(turns[0]) == 3
+    assert result.report["decisions"]["assessment_mode"] == "dialogue"
+
+
+def test_blob_dialogue_expands_turns(tmp_path):
+    blob = "['КЛИЕНТ: привет', 'АГЕНТ: здравствуйте', 'КЛИЕНТ: вопрос', 'АГЕНТ: ответ']"
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["messages", "m"], [blob, 1],
+        ["['КЛИЕНТ: ещё', 'АГЕНТ: снова']", 0]]}})
+    result = run_package(package, tmp_path / "out", client=FakeClient([
+        layout_answer(roles={"query_id": None, "session_id": None,
+                              "input_query": "A", "output_answer": None,
+                              "scenario": None, "assessor_id": None,
+                              "reference_answers": []},
+                       grouping={"kind": "blob_row", "column": None},
+                       dialogue_blob={"column": "A", "container": "python_list",
+                                       "question_marker": "КЛИЕНТ",
+                                       "answer_marker": "АГЕНТ"}),
+        metric_answer(sources=[{"column_id": "B", "role": "final_score",
+                                 "normalization": "numeric",
+                                 "polarity": "direct"}])]))
+    frame = result.umr.frame
+    assert "dialogue" in frame.columns
+    turns = ast.literal_eval(frame["dialogue"].iloc[0])
+    assert [turn[1] for turn in turns] == ["привет", "вопрос"]
+
+
+def test_classification_accuracy_scores_rows(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "pred", "gt"],
+        ["в1", "кредит", "кредит"], ["в2", "вклад", "кредит"]]}})
+    result = run_package(package, tmp_path / "out", client=FakeClient([
+        layout_answer(roles={"query_id": None, "session_id": None,
+                              "input_query": "A", "output_answer": "B",
+                              "scenario": None, "assessor_id": None,
+                              "reference_answers": []}),
+        metric_answer(method="accuracy",
+                       sources=[{"column_id": "B", "role": "prediction",
+                                  "normalization": "label", "polarity": "direct"},
+                                 {"column_id": "C", "role": "target",
+                                  "normalization": "label", "polarity": "direct"}])]))
+    assert sorted(result.umr.frame["main_metric"].tolist()) == [0.0, 1.0]
+    assert result.status == "computed"
+
+
+def test_blank_input_query_rows_are_dropped_not_fatal(tmp_path):
+    """Частично пустой input_query во flat-корзине: после исчерпания repair
+    строки отбрасываются с аудитом, а не роняют прогон."""
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "a", "m"], ["в1", "о1", 1], [None, "о2", 1], ["в3", "о3", 0]]}})
+    result = run_package(package, tmp_path / "out", client=FakeClient(
+        [layout_answer()] * 3 + [metric_answer()]))
+    assert result.status == "computed"
+    assert len(result.umr.frame) == 2
+    assert result.report["dropped_rows"]["blank_input_query"] == [3]
+
+
+def test_metric_failure_degrades_not_dies(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "a", "m"], ["в1", "о1", 1]]}})
+    bad = metric_answer(sources=[{"column_id": "ZZ", "role": "final_score",
+                                   "normalization": "numeric",
+                                   "polarity": "direct"}])
+    result = run_package(package, tmp_path / "out",
+                          client=FakeClient([layout_answer()] + [bad] * 3))
+    assert result.status == "not_computable"
+    assert len(result.umr.frame) == 1
+    assert result.report["status"] == "not_computable"
+    assert result.km["reason_code"] == "not_evaluable"
+    assert any(stage["outcome"] == "degraded" for stage in result.report["stages"])
+
+
+def test_pinned_sheet_skips_sheet_retry(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "a", "m"], ["в1", "о1", 1]]}})
+    bad = metric_answer(sources=[{"column_id": "ZZ", "role": "final_score",
+                                   "normalization": "numeric",
+                                   "polarity": "direct"}])
+    client = FakeClient([layout_answer()] + [bad] * 3)
+    result = run_package(package, tmp_path / "out", client=client,
+                          sheet_name="Лист1")
+    assert result.status == "not_computable"
+    assert client.labels.count("layout_turn1") == 1
+
+def test_layout_failure_retries_spare_sheet(tmp_path):
+    # Первый лист — blob, который не разворачивается вовсе; нода обязана
+    # отвергнуть лист и собрать разметку на втором, как делает этап метрики.
+    package = make_package(tmp_path, {
+        "Диалоги": {"rows": [["dialog", "m"], ["мусор", 1], ["ещё мусор", 0]]},
+        "Плоский": {"rows": [["q", "a", "m"], ["в1", "о1", 1], ["в2", "о2", 0]]},
+    })
+    blob = layout_answer(
+        sheet_name="Диалоги",
+        roles={"query_id": None, "session_id": None, "input_query": "A",
+               "output_answer": None, "scenario": None, "assessor_id": None,
+               "reference_answers": []},
+        grouping={"kind": "blob_row", "column": None},
+        dialogue_blob={"column": "A", "container": "plain_text",
+                       "question_marker": "клиент", "answer_marker": "оператор"})
+    client = FakeClient([blob, blob, blob,
+                         layout_answer(sheet_name="Плоский"), metric_answer()])
+
+    result = run_package(package, tmp_path / "out", client=client)
+
+    assert result.status == "computed"
+    assert result.report["decisions"]["sheet"] == "Плоский"
+

@@ -157,8 +157,10 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
     evidence = workbook_evidence(ctx.sheets)
     resolved: dict = {}
     recoverable: dict = {}
+    attempted: dict = {}
 
     def validate(proposal: dict) -> None:
+        attempted["sheet"] = proposal.get("sheet_name")
         layout, frame, conversion = _materialize(proposal, ctx, pinned_sheet, rejected_sheets)
         validation = conversion["umr_validation"]
         undecodable = conversion["grouping"].get("undecodable_blob_rows")
@@ -191,31 +193,46 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
                 ),
             )
             missing_values = validation["missing_required_values"]
-            # Частично пустые input_query в flat-корзине устранимы отбросом
-            # строк после исчерпания repair — фиксируем кандидата на фолбэк.
-            if (
+            # Построчные дефекты (пустой input_query, строка вне группы)
+            # устранимы отбросом строк после исчерпания repair — фиксируем
+            # кандидата на фолбэк. Структурные нарушения чинит только модель.
+            blank_query = set(
+                missing_values.get("input_query", {}).get("row_positions", []))
+            blank_group = {
+                position
+                for violation in validation["context_violations"]
+                if violation["reason"] == "blank_group"
+                for position in violation["row_positions"]
+            }
+            row_scoped = (
                 not validation["missing_required"]
-                and set(missing_values) == {"input_query"}
                 and not validation["type_violations"]
-                and not validation["context_violations"]
-                and "reference_group_id" not in frame
-                and missing_values["input_query"]["count"] < len(frame)
-            ):
-                keep = [not blank(value) for value in frame["input_query"].tolist()]
-                dropped_rows = [
-                    int(value)
-                    for value in frame.loc[[not flag for flag in keep], "source_row_id"]
-                ]
+                and set(missing_values) <= {"input_query"}
+                and all(violation["reason"] == "blank_group"
+                        for violation in validation["context_violations"])
+            )
+            bad = blank_query | blank_group
+            if row_scoped and bad and len(bad) < len(frame):
+                keep = [position not in bad for position in range(len(frame))]
                 kept = frame.loc[keep].reset_index(drop=True)
+                dropped = {
+                    kind: sorted(int(frame["source_row_id"].iloc[position])
+                                 for position in positions)
+                    for kind, positions in (("blank_input_query", blank_query),
+                                            ("blank_group", blank_group - blank_query))
+                    if positions
+                }
                 fixed = copy.deepcopy(conversion)
                 fixed["row_accounting"]["canon_rows"] = len(kept)
-                fixed["row_accounting"]["dropped_blank_input_query_rows"] = dropped_rows
+                fixed["row_accounting"]["dropped_invalid_rows"] = sorted(
+                    row for rows in dropped.values() for row in rows)
                 fixed["umr_validation"]["status"] = "passed"
                 fixed["umr_validation"]["missing_required_values"] = {}
+                fixed["umr_validation"]["context_violations"] = []
                 recoverable.update(
                     error=error, proposal=copy.deepcopy(proposal),
                     layout=layout, frame=kept, conversion=fixed,
-                    dropped={"blank_input_query": dropped_rows},
+                    dropped=dropped,
                 )
             raise error
         resolved.update(proposal=proposal, layout=layout, frame=frame,
@@ -229,9 +246,13 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
         )
     except (LayoutError, StructuredOutputError) as exc:
         if recoverable.get("error") is not exc:
+            details = dict(exc.details)
+            if attempted.get("sheet"):
+                # Лист последней попытки нужен pipeline для запасного листа.
+                details["sheet"] = attempted["sheet"]
             raise SpecError(
                 f"Обязательные поля спеки не собраны после repair: {exc}",
-                **exc.details,
+                **details,
             ) from exc
         # Repair не помог, но кандидат публикуем: отброс меньшинства строк —
         # деградация с учётом, а не падение ноды.

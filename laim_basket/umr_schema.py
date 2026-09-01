@@ -24,6 +24,7 @@ def validate_flat_canon(
             if positions:
                 missing_values[name] = {
                     "count": len(positions),
+                    "row_positions": positions,
                     "source_rows": (
                         frame["source_row_id"].iloc[positions[:20]].tolist()
                         if "source_row_id" in frame.columns
