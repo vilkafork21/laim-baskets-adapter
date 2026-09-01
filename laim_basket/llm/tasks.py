@@ -358,6 +358,6 @@ def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
             "score_domain_percent",
             "оценки в колонках "
             f"{resolved['km']['percent_domain_columns']} заданы в процентных "
-            "пунктах при шкале percent — приведены к долям",
+            f"пунктах при шкале {resolved['plan'].scale} — приведены к долям",
         )
     return resolved["plan"], resolved["km"], resolved["published"]

@@ -61,3 +61,32 @@ def test_scores_above_hundred_are_not_a_percent_domain(tmp_path):
 
     with pytest.raises(NotEvaluableError):
         evaluate(frame, layout, plan)
+
+
+def test_percent_point_scores_under_ratio_scale_are_normalized_too(tmp_path):
+    # Шкала ratio, а оценки 70/100: доля не бывает больше единицы — это те же
+    # процентные пункты, и модель лишь иначе назвала шкалу.
+    layout, frame, sheet = _prepared(tmp_path, [70, 100, 85])
+    plan = resolve_measurement_plan(
+        metric_answer(scale="ratio", sources=[source("C", "final_score")],
+                      reported_value={"state": "declared", "value": None, "raw": "0.85"}),
+        layout, frame, sheet)
+
+    scored, km = evaluate(frame, layout, plan)
+
+    assert scored["main_metric"].tolist() == [0.7, 1.0, 0.85]
+    assert km["reconciliation"]["status"] == "match"
+    assert km["percent_domain_columns"] == ["C"]
+
+
+def test_raw_scale_keeps_scores_above_one(tmp_path):
+    layout, frame, sheet = _prepared(tmp_path, [2, 1, 2])
+    plan = resolve_measurement_plan(
+        metric_answer(scale="raw", sources=[source("C", "final_score")],
+                      reported_value={"state": "declared", "value": None, "raw": "1.67"}),
+        layout, frame, sheet)
+
+    scored, km = evaluate(frame, layout, plan)
+
+    assert scored["main_metric"].tolist() == [2.0, 1.0, 2.0]
+    assert km["percent_domain_columns"] == []
