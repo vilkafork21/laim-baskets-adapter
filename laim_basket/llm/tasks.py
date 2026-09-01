@@ -80,6 +80,32 @@ def _document_ports(names: list[str], kinds: dict[str, str]) -> dict[str, str]:
     return ports
 
 
+_CI_TOKEN = re.compile(r"(?i)\bCI\d{6,}\b")
+
+
+def check_report_identity(context: RunContext, journal: Journal) -> None:
+    """CI-код в отчёте о валидации против basket_id: baseline берётся из отчёта
+    как есть, поэтому чужой отчёт обязан быть виден в журнале (LAIM-0188)."""
+    text = "\n".join(
+        paragraph
+        for document in context.documents if document["port"] == "validation_report"
+        for paragraph in document["paragraphs"]
+    )
+    tokens = sorted({token.upper() for token in _CI_TOKEN.findall(text)})
+    if not tokens:
+        logger.info("Отчёт о валидации не содержит CI-кода: идентичность корзины "
+                    "%s по отчёту не подтверждена", context.basket_id)
+    elif context.basket_id in tokens:
+        logger.info("Идентичность подтверждена: CI %s встречается в отчёте о валидации",
+                    context.basket_id)
+    else:
+        journal.warning(
+            "report_identity_mismatch",
+            f"отчёт о валидации упоминает {tokens}, корзина — {context.basket_id}: "
+            "возможен чужой отчёт; baseline взят из него без изменений",
+        )
+
+
 def _basket_id(package_name: str) -> str:
     match = re.search(r"(?i)ci[0-9]+", package_name)
     if match is None:
