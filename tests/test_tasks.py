@@ -208,3 +208,20 @@ def test_blank_group_rows_dropped_after_repair(tmp_path):
     assert outcome.frame["input_query"].tolist() == ["в1", "в2"]
     assert journal.dropped_rows["blank_group"] == [2]
 
+
+
+def test_dropping_most_rows_is_not_a_degradation(tmp_path):
+    # Отброс большинства строк после repair — не «деградация с учётом», а
+    # несобранная разметка: корзина из одной строки не должна уйти как computed.
+    import pytest
+
+    from laim_basket.errors import SpecError
+    journal = Journal()
+    rows = [["q", "a", "m"], ["в1", "о1", 1], [None, "о2", 0], [None, "о3", 1],
+            [None, "о4", 0], ["в5", "о5", 1]]
+    package = make_package(tmp_path, {"Лист1": {"rows": rows}})
+    ctx = tasks.build_run_context(package)
+    answer = layout_answer()
+
+    with pytest.raises(SpecError, match="больше половины"):
+        tasks.run_layout(FakeClient([answer, answer, answer]), ctx, journal, "", frozenset())
