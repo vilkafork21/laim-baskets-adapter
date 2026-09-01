@@ -56,6 +56,8 @@ def _plan(mode: str, sources: list[dict], reducer: str = "mean") -> MeasurementP
         ("mark * freq", "mark_freq_metric"),
         ("Оценка классификации", "оценка_классификации_metric"),
         ("quality_metric", "quality_metric"),
+        ("质量", "质量_metric"),
+        ("Qualité — score", "qualité_score_metric"),
     ],
 )
 def test_metric_slug_is_deterministic_from_header(header, expected):
