@@ -213,16 +213,21 @@ def _dialogue_turns(frame: pd.DataFrame, positions: list[int]) -> str:
 
 
 def _dialogue(
-    frame: pd.DataFrame, layout: ResolvedLayout, names: list[tuple[str, str]]
+    frame: pd.DataFrame, layout: ResolvedLayout, names: list[tuple[str, str]],
+    weighted: bool,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Одна строка на сессию; сессионная колонка, меняющаяся внутри диалога, опускается."""
     session = frame.assign(session_id=_session_values(frame, layout))
     # На диалоговом листе строка — сессия: turn-колонки уходят в `dialogue`,
-    # остаются только те, что несут одно значение на весь диалог.
+    # остаются только те, что несут одно значение на весь диалог. Вес сессии
+    # публикуется, когда контракт объявляет его weight_column: иначе потребители
+    # молча считают невзвешенное среднее (аудит LAIM-0018).
+    turn_columns = ("query_id", "input_query", "output_answer") + (
+        () if weighted else ("input_query_count",)
+    )
     session_columns = [
         name for name in _spec_columns(names)
-        if name in session
-        and name not in ("query_id", "input_query_count", "input_query", "output_answer")
+        if name in session and name not in turn_columns
     ]
     positions: dict[object, list[int]] = {}
     for position, group in enumerate(session["reference_group_id"].tolist()):
@@ -261,7 +266,8 @@ def publish_umr(frame: pd.DataFrame, layout: ResolvedLayout, plan: MeasurementPl
     dropped: list[str] = []
     if plan is not None and plan.assessment_mode == "dialogue":
         variant, sheet_name = "dialogue", DIALOGUE_SHEET
-        published, dropped = _dialogue(source, layout, names)
+        published, dropped = _dialogue(
+            source, layout, names, plan.reducer == "frequency_weighted_mean")
     else:
         variant, sheet_name = "flat", FLAT_SHEET
         published = _flat(source, layout, names)
