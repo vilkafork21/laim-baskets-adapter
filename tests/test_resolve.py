@@ -144,3 +144,25 @@ def test_text_reference_answer_is_accepted(tmp_path):
                                   "reference_answers": ["C"]})
     layout = resolve_layout(answer, _sheets(tmp_path, rows), BASKET, "", frozenset())
     assert layout.roles["reference_answers"] == ["ref"]
+
+
+def test_binary_column_cannot_be_assessor_id(tmp_path):
+    # Колонка голосов 0/1, названная assessor_id, блокирует план метрики без
+    # шанса на repair — как и числовой эталон.
+    rows = [["q", "a", "Разметчик 1", "Разметчик 2"], ["в1", "о1", 1, 0], ["в2", "о2", 0, 1]]
+    answer = layout_answer(roles={"query_id": None, "session_id": None,
+                                  "input_query": "A", "output_answer": "B",
+                                  "scenario": None, "assessor_id": "C",
+                                  "reference_answers": []})
+    with pytest.raises(LayoutError, match="0/1"):
+        resolve_layout(answer, _sheets(tmp_path, rows), BASKET, "", frozenset())
+
+
+def test_numeric_assessor_id_is_accepted(tmp_path):
+    rows = [["q", "a", "ассессор"], ["в1", "о1", 17], ["в2", "о2", 42]]
+    answer = layout_answer(roles={"query_id": None, "session_id": None,
+                                  "input_query": "A", "output_answer": "B",
+                                  "scenario": None, "assessor_id": "C",
+                                  "reference_answers": []})
+    layout = resolve_layout(answer, _sheets(tmp_path, rows), BASKET, "", frozenset())
+    assert layout.roles["assessor_id"] == {"source": "ассессор"}

@@ -163,23 +163,39 @@ def _prove_roles(roles: dict, grouping: dict, blob: dict | None) -> None:
         raise LayoutError("grouping=column требует column")
 
 
+def _present_numbers(region, source: str) -> list | None:
+    """Заполненные значения колонки, если все они числовые, иначе None."""
+    values = [row[region.columns.index(source)] for row in region.rows]
+    present = [value for value in values if not blank(value)]
+    numeric = all(
+        isinstance(value, (int, float)) and not isinstance(value, bool) for value in present
+    )
+    return present if present and numeric else None
+
+
 def _prove_references(region, roles: dict) -> None:
-    """Эталон — текст. Колонка, где все заполненные ячейки числовые, — это
-    оценка (голос разметчика), и как эталон она заблокирует план метрики
-    без шанса на repair: роли к тому моменту заморожены."""
+    """Эталон — текст, идентификатор разметчика — не голос. Колонка оценок,
+    попавшая в эти роли, заблокирует план метрики без шанса на repair:
+    роли к тому моменту заморожены."""
     for source in roles["reference_answers"]:
-        values = [row[region.columns.index(source)] for row in region.rows]
-        present = [value for value in values if not blank(value)]
-        if present and all(
-            isinstance(value, (int, float)) and not isinstance(value, bool)
-            for value in present
-        ):
+        present = _present_numbers(region, source)
+        if present is not None:
             raise LayoutError(
                 "Колонка эталона содержит только числовые значения — это оценка, "
                 "а не reference_answer",
                 column=source, samples=[str(value) for value in present[:3]],
                 repair_hint="убери колонку из reference_answers; числовые оценки "
                             "назначает план метрики",
+            )
+    assessor = roles.get("assessor_id")
+    if isinstance(assessor, dict):
+        present = _present_numbers(region, assessor["source"])
+        if present is not None and all(float(value) in (0.0, 1.0) for value in present):
+            raise LayoutError(
+                "Колонка assessor_id содержит только значения 0/1 — это голос "
+                "разметчика, а не его идентификатор",
+                column=assessor["source"],
+                repair_hint="назначь assessor_id=null; колонки голосов назначает план метрики",
             )
 
 
