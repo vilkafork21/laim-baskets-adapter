@@ -127,3 +127,15 @@ def test_main_logs_basket_error_details_before_raising(tmp_path, monkeypatch, ca
             assessor_instruction=package / "assessor_instruction.txt",
         )
     assert "source_rows" in caplog.text and "366" in caplog.text
+
+
+def test_package_name_keeps_cyrillic_identity(tmp_path):
+    # Имя пакета — идентичность корзины в журнале и в имени XLSX; кириллица
+    # не должна вырождаться в литерал basket.
+    import main as node
+
+    basket = tmp_path / "Корзина агента вкладов" / "тестовая корзина.xlsx"
+    basket.parent.mkdir()
+    basket.write_bytes(b"PK")
+    name = node._package_name(basket)
+    assert "basket" not in name and "агента" in name and " " not in name

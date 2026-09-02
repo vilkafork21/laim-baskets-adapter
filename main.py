@@ -73,8 +73,10 @@ def _resolve_artifact(value: str | Path, port_name: str) -> tuple[Path, str]:
 
 
 def _package_name(test_set: Path) -> str:
+    """Имя пакета из каталога и имени корзины: буквы любого алфавита
+    сохраняются, чтобы идентичность корзины не вырождалась в literal."""
     identity = f"{test_set.parent.name}_{test_set.stem}"
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", identity).strip("-._")
+    safe = re.sub(r"[^\w.-]+", "-", identity).strip("-._")
     return safe or "basket"
 
 
