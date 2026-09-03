@@ -111,8 +111,7 @@ def _basket_id(package_name: str) -> str:
     match = re.search(r"(?i)ci[0-9]+", package_name)
     if match is None:
         logger.warning(
-            "CI-код не найден в имени пакета %r — basket_id взят как есть: %r. "
-            "Потребители контура сверяют его с run_context.agent_ci",
+            "CI-код не найден в имени пакета %r — basket_id взят как есть: %r",
             package_name, package_name,
         )
         return package_name
@@ -272,7 +271,7 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
             LAYOUT_SCHEMA, "layout", validate_extra=validate,
         )
     except (LayoutError, StructuredOutputError) as exc:
-        if recoverable.get("error") is not exc:
+        if not recoverable:
             details = dict(exc.details)
             if attempted.get("sheet"):
                 # Лист последней попытки нужен pipeline для запасного листа.
@@ -286,11 +285,13 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
         dropped_rows = sum(len(rows) for rows in recoverable["dropped"].values())
         kept_rows = recoverable["frame"]["source_row_id"].nunique()
         if dropped_rows > (dropped_rows + kept_rows) * defaults.MAX_DROPPED_ROW_SHARE:
+            recovered_error = recoverable["error"]
             raise SpecError(
                 "Разметка отбрасывает больше половины строк корзины — обязательные "
-                f"поля спеки не собраны: {exc}",
-                dropped_rows=dropped_rows, kept_rows=int(kept_rows), **exc.details,
-            ) from exc
+                f"поля спеки не собраны: {recovered_error}",
+                dropped_rows=dropped_rows, kept_rows=int(kept_rows),
+                **recovered_error.details,
+            ) from recovered_error
         for kind, rows in recoverable["dropped"].items():
             journal.dropped(kind, rows)
         resolved.update(proposal=recoverable["proposal"],

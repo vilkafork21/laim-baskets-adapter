@@ -31,6 +31,7 @@ dialogue_markers снимка (АГЕНТ и АГЕНТЫ — разные ма�
 blob); один только session_id не делает корзину диалоговой.
 - Если ответ агента разложен по двум колонкам (основная ветка + fallback), \
 используй output_answer.coalesce.
+- assessor_id — только идентификатор разметчика, не его вердикт или оценка.
 - weight_column — только физическая колонка целых частот (freq, количество \
 повторов); иначе null.
 - Пустые ячейки ответов допустимы: их обработает политика пропусков плана."""
@@ -50,6 +51,9 @@ state=ambiguous.
 - sources: колонки по column_id из инвентаря; role: final_score | criterion | \
 assessor_vote | prediction | target. Для prediction/target normalization=label; \
 текстовые оценки задавай value_map-объектом в normalization.
+- identity требует ровно один final_score; mean_criteria/all_criteria — \
+минимум два criterion; majority/all_assessors — минимум два assessor_vote; \
+accuracy — ровно по одному prediction и target.
 - reducer=frequency_weighted_mean только когда документы говорят о взвешивании \
 по частоте и в корзине есть weight-колонка.
 - В quotes процитируй фрагменты документов, подтверждающие метрику, редьюсер и \

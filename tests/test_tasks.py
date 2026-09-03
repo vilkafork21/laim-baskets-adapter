@@ -188,6 +188,25 @@ def test_grouped_blank_input_query_rows_dropped_after_repair(tmp_path):
     assert client.calls == 3
 
 
+def test_later_bad_repair_does_not_discard_recoverable_layout(tmp_path):
+    journal = Journal()
+    rows = [["q", "a", "m"], ["в1", "о1", 1], [None, "о2", 0], ["в3", "о3", 1]]
+    package = make_package(tmp_path, {"Лист1": {"rows": rows}})
+    ctx = tasks.build_run_context(package)
+    bad_repair = layout_answer(grouping={"kind": "merged_rows", "column": None})
+
+    outcome = tasks.run_layout(
+        FakeClient([layout_answer(), bad_repair, bad_repair]),
+        ctx,
+        journal,
+        "",
+        frozenset(),
+    )
+
+    assert outcome.frame["input_query"].tolist() == ["в1", "в3"]
+    assert journal.dropped_rows["blank_input_query"] == [3]
+
+
 def test_blank_group_rows_dropped_after_repair(tmp_path):
     journal = Journal()
     rows = [["s", "q", "a", "m"],

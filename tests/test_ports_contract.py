@@ -103,6 +103,7 @@ def test_descriptor_source_files_match_disk():
         and path.relative_to(MODULE_DIR).parts[0] != "tests"
     }
     assert listed == actual
+    assert all(port["name"] != "run_context" for port in descriptor["ports"])
 
 
 def test_main_logs_basket_error_details_before_raising(tmp_path, monkeypatch, caplog):
@@ -127,3 +128,14 @@ def test_main_logs_basket_error_details_before_raising(tmp_path, monkeypatch, ca
             assessor_instruction=package / "assessor_instruction.txt",
         )
     assert "source_rows" in caplog.text and "366" in caplog.text
+
+
+def test_package_name_keeps_cyrillic_identity(tmp_path):
+    node = _load_main()
+    basket = tmp_path / "Корзина агента вкладов" / "тестовая корзина.xlsx"
+    basket.parent.mkdir()
+    basket.touch()
+
+    name = node._package_name(basket)
+
+    assert "basket" not in name and "агента" in name and " " not in name
