@@ -185,7 +185,6 @@ def _parse_reported(reported: dict, scale: str) -> tuple[Decimal | None, str | N
     if state == "ambiguous":
         raise AmbiguousBaselineError(
             "Отчёт о валидации объявляет итоговую КМ неоднозначно",
-            hint="выбери значение, отвечающее целевому редьюсеру, либо state=not_declared",
         )
     if state == "not_declared":
         return None, None, 0

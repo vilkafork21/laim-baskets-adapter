@@ -25,6 +25,7 @@ def test_layout_prompt_wraps_documents_and_ends_with_schema():
     assert "Расшифровка колонок: mark - оценка" in user
     assert user.index("<validation_report>") < user.index("JSON SCHEMA")
     assert "json_schema" not in messages[0]["content"]
+    assert "assessor_id — только идентификатор" in messages[0]["content"]
 
 
 def test_layout_prompt_names_pinned_and_rejected_sheets():
@@ -39,6 +40,7 @@ def test_metric_prompt_carries_inventory_and_priority_rule():
     user = messages[-1]["content"]
     assert "mark" in user
     assert "отчёт о валидации" in messages[0]["content"].lower()
+    assert "identity требует ровно один final_score" in messages[0]["content"]
 
 
 def test_truncated_document_is_logged(monkeypatch, caplog):

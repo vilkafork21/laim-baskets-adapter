@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .config import llm_config
 from .errors import (
+    AmbiguousBaselineError,
     BasketError,
     MeasurementPlanError,
     NotEvaluableError,
@@ -168,7 +169,12 @@ def run_package(
                 exc.reason_code,
                 f"план не построен на листе {outcome.layout.sheet_name!r}: {exc}",
             )
-            if not sheet_name and attempt == 1 and len(context.sheets) > 1:
+            if (
+                not isinstance(exc, AmbiguousBaselineError)
+                and not sheet_name
+                and attempt == 1
+                and len(context.sheets) > 1
+            ):
                 rejected = frozenset({outcome.layout.sheet_name})
                 fallback = (outcome, exc)
                 continue

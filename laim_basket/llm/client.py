@@ -17,7 +17,12 @@ import requests
 
 from .. import defaults
 from ..config import LlmConfig
-from ..errors import BasketError, LlmError, StructuredOutputError
+from ..errors import (
+    AmbiguousBaselineError,
+    BasketError,
+    LlmError,
+    StructuredOutputError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +203,8 @@ def request_structured(client: LlmClient, messages: list[dict], schema: dict,
             last_exception = exc
         except LlmError as exc:
             last_error, last_exception = str(exc), exc
+        except AmbiguousBaselineError:
+            raise
         except Exception as exc:  # BasketError из validate_extra
             last_error, last_exception = f"{type(exc).__name__}: {exc}", exc
             details = getattr(exc, "details", None)

@@ -115,6 +115,26 @@ def test_metric_failure_degrades_not_dies(tmp_path):
     assert any(stage["outcome"] == "degraded" for stage in result.report["stages"])
 
 
+def test_ambiguous_baseline_is_not_repaired_or_moved_to_spare_sheet(tmp_path):
+    package = make_package(tmp_path, {
+        "Корзина": {"rows": [
+            ["q", "a", "m"], ["в1", "о1", 1], ["в2", "о2", 0]]},
+        "Справочник": {"rows": [
+            ["Сценарий", "Описание"], ["вход", "про вход"]]},
+    })
+    client = FakeClient([
+        layout_answer(sheet_name="Корзина"),
+        metric_answer(reported_value={"state": "ambiguous", "value": None, "raw": None}),
+    ])
+
+    result = run_package(package, tmp_path / "out", client=client)
+
+    assert result.status == "not_computable"
+    assert result.km["reason_code"] == "ambiguous_baseline"
+    assert result.report["decisions"]["sheet"] == "Корзина"
+    assert client.calls == 2
+
+
 def test_pinned_sheet_skips_sheet_retry(tmp_path):
     package = make_package(tmp_path, {"Лист1": {"rows": [
         ["q", "a", "m"], ["в1", "о1", 1]]}})
