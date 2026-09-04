@@ -1,9 +1,11 @@
 """Оркестрация: happy-path разметки, КМ только из отчёта, роли документов."""
 from __future__ import annotations
 
+import pytest
 
 from conftest import layout_answer, metric_answer
 from helpers import FakeClient, make_docx, make_package, make_workbook
+from laim_basket.errors import PackageError
 from laim_basket.journal import Journal
 from laim_basket.llm import tasks
 
@@ -244,3 +246,28 @@ def test_dropping_most_rows_is_not_a_degradation(tmp_path):
 
     with pytest.raises(SpecError, match="больше половины"):
         tasks.run_layout(FakeClient([answer, answer, answer]), ctx, journal, "", frozenset())
+
+
+def test_context_uses_trusted_agent_ci_when_package_has_no_ci(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": ROWS}}, name="корзина_агента_23")
+    ctx = tasks.build_run_context(package, {"agent_ci": "ci86242115"})
+    assert ctx.basket_id == "CI86242115"
+
+
+def test_context_accepts_matching_trusted_agent_ci(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": ROWS}})
+    ctx = tasks.build_run_context(package, {"agent_ci": "CI09000001"})
+    assert ctx.basket_id == "CI09000001"
+
+
+def test_context_rejects_package_identity_mismatch(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": ROWS}})
+    with pytest.raises(PackageError, match="не совпадает"):
+        tasks.build_run_context(package, {"agent_ci": "CI86242115"})
+
+
+@pytest.mark.parametrize("run_context", [{}, {"agent_ci": "agent-23"}, []])
+def test_context_rejects_invalid_run_context(tmp_path, run_context):
+    package = make_package(tmp_path, {"Лист1": {"rows": ROWS}})
+    with pytest.raises(PackageError, match="run_context.agent_ci"):
+        tasks.build_run_context(package, run_context)

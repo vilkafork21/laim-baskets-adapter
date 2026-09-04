@@ -91,6 +91,7 @@ def run_package(
     out_dir: str | Path,
     client=None,
     sheet_name: str = "",
+    run_context: dict[str, object] | None = None,
 ) -> RunResult:
     """sheet_name задаёт обязательный лист корзины (книги с листами нескольких
     агентов различимы только оператором); пустое значение — автоопределение."""
@@ -100,7 +101,7 @@ def run_package(
     debug.mkdir(parents=True, exist_ok=True)
     journal = Journal()
     started = time.monotonic()
-    context = tasks.build_run_context(input_path)
+    context = tasks.build_run_context(input_path, run_context)
     journal.set_inputs(context.file_hashes)
     tasks.check_report_identity(context, journal)
     journal.stage("read", "ok", _ms(started))
