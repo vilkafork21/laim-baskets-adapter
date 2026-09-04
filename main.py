@@ -221,6 +221,7 @@ def main(
     assessor_instruction: str | Path,
     model_id: str = "glm-5.2",
     sheet_name: str = "",
+    run_context: dict[str, object] | None = None,
 ):
     """Запустить полный laim-basket внутри одной Sber DS-ноды."""
     # Платформа не настраивает logging: без обработчика записи INFO из
@@ -250,7 +251,8 @@ def main(
     client = LlmClient(config, out_dir / "debug")
     try:
         result = run_package(
-            package, out_dir, client=client, sheet_name=sheet_name
+            package, out_dir, client=client, sheet_name=sheet_name,
+            run_context=run_context,
         )
     except BasketError as exc:
         # Платформа показывает только str(exc), а debug-каталог гибнет вместе

@@ -85,13 +85,23 @@
       "getPortAsLocalPath": true
     },
     {
+      "name": "run_context",
+      "label": "Selection manifest прогона",
+      "in": true,
+      "type": "default",
+      "shape": "shape_model",
+      "description": "selection запуска: trusted agent_ci для basket_id и проверки принадлежности пакета",
+      "required": false,
+      "order": 5
+    },
+    {
       "name": "reference_umr",
       "label": "Reference UMR",
       "in": false,
       "type": "dataframe",
       "shape": "shape_dataframe",
       "description": "Эталонная корзина в формате тестового датасета: лист «Вариант для отд. запросов» либо «Вариант для диалога»",
-      "order": 5
+      "order": 6
     },
     {
       "name": "monitoring_metric",
@@ -100,7 +110,7 @@
       "type": "default",
       "shape": "shape_model",
       "description": "Операционный контракт laim-monitoring-metric.v2; assessment_mode детерминирован физической формой корзины",
-      "order": 6
+      "order": 7
     },
     {
       "name": "km_result",
@@ -109,7 +119,7 @@
       "type": "default",
       "shape": "shape_model",
       "description": "Журнал прогона laim-run-report.v1: этапы, решения, LLM-статистика, warnings, sha256 входов",
-      "order": 7
+      "order": 8
     },
     {
       "name": "umr_artifact",
@@ -118,7 +128,7 @@
       "type": "default",
       "shape": "shape_model",
       "description": "Локальный путь к UMR XLSX (тот же лист формата тестового датасета)",
-      "order": 8
+      "order": 9
     }
   ],
   "script": {

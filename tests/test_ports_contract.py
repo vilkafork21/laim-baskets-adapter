@@ -24,8 +24,11 @@ def _load_main():
     return module
 
 
-def _run_main(tmp_path, monkeypatch, responses, rows=None):
-    package = make_package(tmp_path, {"Лист1": {"rows": rows or ROWS}})
+def _run_main(tmp_path, monkeypatch, responses, rows=None, *, run_context=None,
+              package_name="CI09000001_test"):
+    package = make_package(
+        tmp_path, {"Лист1": {"rows": rows or ROWS}}, name=package_name
+    )
     main = _load_main()
     client = FakeClient(responses)
     monkeypatch.setattr(main, "LlmClient", lambda config, out_dir: client)
@@ -34,7 +37,17 @@ def _run_main(tmp_path, monkeypatch, responses, rows=None):
         test_set=package / "test_set.xlsx",
         development_report=package / "development_report.docx",
         assessor_instruction=package / "assessor_instruction.txt",
+        run_context=run_context,
     )
+
+
+def test_main_uses_run_context_agent_ci_as_basket_id(tmp_path, monkeypatch):
+    ports = _run_main(
+        tmp_path, monkeypatch, [layout_answer(), metric_answer()],
+        run_context={"agent_ci": "CI86242115"}, package_name="корзина_агента_23",
+    )
+    assert ports["monitoring_metric"]["basket_id"] == "CI86242115"
+    assert ports["km_result"]["basket_id"] == "CI86242115"
 
 
 def test_monitoring_metric_carries_consumer_fields(tmp_path, monkeypatch):
@@ -103,7 +116,8 @@ def test_descriptor_source_files_match_disk():
         and path.relative_to(MODULE_DIR).parts[0] != "tests"
     }
     assert listed == actual
-    assert all(port["name"] != "run_context" for port in descriptor["ports"])
+    ports = {port["name"]: port for port in descriptor["ports"]}
+    assert ports["run_context"]["in"] is True and ports["run_context"]["required"] is False
 
 
 def test_main_logs_basket_error_details_before_raising(tmp_path, monkeypatch, caplog):
@@ -112,7 +126,7 @@ def test_main_logs_basket_error_details_before_raising(tmp_path, monkeypatch, ca
     main = _load_main()
     monkeypatch.setattr(main, "LlmClient", lambda config, out_dir: object())
 
-    def failing_run_package(path, out_dir, client, sheet_name):
+    def failing_run_package(path, out_dir, client, sheet_name, run_context):
         raise LayoutError(
             "Канонический UMR не прошёл валидацию",
             missing_required_values={"input_query": {"count": 2,

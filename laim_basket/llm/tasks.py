@@ -107,18 +107,47 @@ def check_report_identity(context: RunContext, journal: Journal) -> None:
         )
 
 
-def _basket_id(package_name: str) -> str:
-    match = re.search(r"(?i)ci[0-9]+", package_name)
-    if match is None:
+def _basket_id(
+    package_name: str,
+    run_context: dict[str, object] | None = None,
+) -> str:
+    """Идентичность корзины: trusted agent_ci из selection, иначе CI из имени пакета.
+
+    Конфликт CI в имени пакета с agent_ci запуска — корзина не того агента
+    (аудит LAIM-0040); нода останавливается до LLM-вызовов."""
+    matches = re.findall(r"(?i)ci[0-9]+", package_name)
+    if run_context is not None:
+        agent_ci = run_context.get("agent_ci") if isinstance(run_context, dict) else None
+        if not isinstance(agent_ci, str) or not re.fullmatch(
+            r"(?i)CI[0-9]+", agent_ci.strip()
+        ):
+            raise PackageError(
+                "run_context.agent_ci должен быть строкой вида CI<цифры>",
+                agent_ci=agent_ci,
+            )
+        trusted = agent_ci.strip().upper()
+        package_ci = sorted({match.upper() for match in matches})
+        if any(match != trusted for match in package_ci):
+            raise PackageError(
+                "CI-код в имени пакета не совпадает с run_context.agent_ci",
+                package_ci=package_ci,
+                agent_ci=trusted,
+            )
+        return trusted
+    if not matches:
         logger.warning(
-            "CI-код не найден в имени пакета %r — basket_id взят как есть: %r",
+            "CI-код не найден в имени пакета %r — basket_id взят как есть: %r. "
+            "Потребители контура сверяют его с run_context.agent_ci",
             package_name, package_name,
         )
         return package_name
-    return match.group(0).upper()
+    return matches[0].upper()
 
 
-def build_run_context(package: str | Path) -> RunContext:
+def build_run_context(
+    package: str | Path,
+    run_context: dict[str, object] | None = None,
+) -> RunContext:
     manifest = scan_package(package)
     baskets = manifest["baskets"]
     documents = manifest["documents"]
@@ -153,7 +182,7 @@ def build_run_context(package: str | Path) -> RunContext:
     sheets = read_workbook(basket_path)
     logger.info("Книга %s: листы %s", basket_path.name, list(sheets))
     return RunContext(
-        basket_id=_basket_id(manifest["package_name"]),
+        basket_id=_basket_id(manifest["package_name"], run_context),
         file_hashes={item["name"]: item["sha256"] for item in manifest["files"]},
         sheets=sheets,
         documents=loaded_documents,
