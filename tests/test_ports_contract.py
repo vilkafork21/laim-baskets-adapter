@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import layout_answer, metric_answer
+from conftest import layout_answer, metric_answer, evaluation_answer
 from helpers import FakeClient, make_package
 from laim_basket.errors import LayoutError
 
@@ -53,9 +53,10 @@ def test_main_uses_run_context_agent_ci_as_basket_id(tmp_path, monkeypatch):
 def test_monitoring_metric_carries_consumer_fields(tmp_path, monkeypatch):
     ports = _run_main(tmp_path, monkeypatch, [layout_answer(), metric_answer()])
     metric = ports["monitoring_metric"]
-    assert metric["contract_version"] == "laim-monitoring-metric.v2"
+    assert metric["contract_version"] == "laim-monitoring-metric.v3"
     assert metric["umr_version"] == "laim-umr.v2"
-    assert metric["status"] == "computed"
+    assert metric["status"] == "not_computable"
+    assert metric["reason_code"] == "measurement_review_required"
     assert metric["score_column"] == "main_metric"
     assert metric["assessment_mode"] == "qa"
     assert metric["primary_validation"]["affects_monitoring"] is False
@@ -126,7 +127,7 @@ def test_main_logs_basket_error_details_before_raising(tmp_path, monkeypatch, ca
     main = _load_main()
     monkeypatch.setattr(main, "LlmClient", lambda config, out_dir: object())
 
-    def failing_run_package(path, out_dir, client, sheet_name, run_context):
+    def failing_run_package(path, out_dir, client, sheet_name, run_context, onboarding_plan):
         raise LayoutError(
             "Канонический UMR не прошёл валидацию",
             missing_required_values={"input_query": {"count": 2,
@@ -157,7 +158,7 @@ def test_package_name_keeps_cyrillic_identity(tmp_path):
 
 @pytest.mark.parametrize("scale", ["ratio", "percent"])
 def test_small_percent_publishes_same_ratio_baseline(tmp_path, monkeypatch, scale):
-    proposal = metric_answer(scale=scale, reported_value={
+    proposal = metric_answer(scale=scale, evaluation=evaluation_answer(score_values=[0, 0.009, 1]), reported_value={
         "state": "declared", "value": None, "raw": "0.9%"})
     ports = _run_main(
         tmp_path, monkeypatch, [layout_answer(), proposal],
@@ -168,3 +169,12 @@ def test_small_percent_publishes_same_ratio_baseline(tmp_path, monkeypatch, scal
     assert baseline["value"] == pytest.approx(0.009)
     assert baseline["recomputed_value"] == pytest.approx(0.009)
     assert baseline["reconciliation"] == "match"
+
+
+def test_dataframe_and_excel_keep_same_definition(tmp_path, monkeypatch):
+    import pandas as pd
+    ports = _run_main(tmp_path, monkeypatch, [layout_answer(), metric_answer()],
+                      run_context={"agent_ci": "CI09000001", "solution_version": "test-v1"})
+    frame = pd.read_excel(ports["umr_artifact"])
+    assert frame["definition_id"].tolist() == ports["reference_umr"]["definition_id"].tolist()
+    assert frame["dataset_role"].tolist() == ["reference", "reference"]

@@ -4,7 +4,7 @@ from __future__ import annotations
 import ast
 
 
-from conftest import layout_answer, metric_answer
+from conftest import layout_answer, metric_answer, source, evaluation_answer
 from helpers import FakeClient, make_package
 from laim_basket.pipeline import run_package
 
@@ -37,7 +37,7 @@ def test_merged_dialogue_publishes_triples(tmp_path):
                               "scenario": None, "assessor_id": None,
                               "reference_answers": []},
                        grouping={"kind": "merged_rows", "column": None}),
-        metric_answer(sources=[{"column_id": "D", "role": "final_score",
+        metric_answer(assessment_mode="dialogue", sources=[{"column_id": "D", "role": "final_score",
                                  "normalization": "numeric",
                                  "polarity": "direct"}])]))
     frame = result.umr.frame
@@ -61,7 +61,7 @@ def test_blob_dialogue_expands_turns(tmp_path):
                        dialogue_blob={"column": "A", "container": "python_list",
                                        "question_marker": "КЛИЕНТ",
                                        "answer_marker": "АГЕНТ"}),
-        metric_answer(sources=[{"column_id": "B", "role": "final_score",
+        metric_answer(assessment_mode="dialogue", sources=[{"column_id": "B", "role": "final_score",
                                  "normalization": "numeric",
                                  "polarity": "direct"}])]))
     frame = result.umr.frame
@@ -184,7 +184,7 @@ def _blob_layout(container: str, question: str, answer: str):
 
 
 def _score_plan():
-    return metric_answer(sources=[{"column_id": "B", "role": "final_score",
+    return metric_answer(assessment_mode="dialogue", sources=[{"column_id": "B", "role": "final_score",
                                    "normalization": "numeric", "polarity": "direct"}])
 
 
@@ -253,7 +253,7 @@ def test_percent_point_scores_publish_ratio_with_warning(tmp_path):
         validation=("Доля верных ответов составила 85%",))
     result = run_package(package, tmp_path / "out", client=FakeClient([
         layout_answer(),
-        metric_answer(scale="percent",
+        metric_answer(scale="percent", evaluation=evaluation_answer(score_values=[0, 0.7, 0.85, 1]), sources=[source("C", "final_score", "percent")],
                       reported_value={"state": "declared", "value": 85,
                                        "raw": "85%"})]))
     assert result.umr.frame["main_metric"].tolist() == [0.7, 1.0]
@@ -279,3 +279,13 @@ def test_spare_sheet_layout_failure_keeps_first_sheet_basket(tmp_path):
     assert result.umr.frame["input_query"].tolist() == ["в1", "в2"]
     assert result.report["decisions"]["sheet"] == "Корзина"
     assert any(w["code"] == "spec_error" for w in result.report["warnings"])
+
+
+def test_reviewed_onboarding_plan_replays_without_llm(tmp_path):
+    package = make_package(tmp_path, {"Лист1": {"rows": [
+        ["q", "a", "m"], ["q1", "a1", 1], ["q2", "a2", 0]]}})
+    plan = {"layout": layout_answer(), "metric": metric_answer()}
+    result = run_package(package, tmp_path / "out", client=FakeClient([]), onboarding_plan=plan)
+    assert result.status == "computed"
+    assert result.km["main_metric"]["recomputed_value"] == 0.5
+    assert result.report["decisions"]["onboarding_plan"] == plan

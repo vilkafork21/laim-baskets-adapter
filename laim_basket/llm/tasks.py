@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import copy
+
+import jsonschema
 import logging
 import re
 from dataclasses import dataclass
@@ -208,7 +210,7 @@ def _materialize(proposal: dict, ctx: RunContext, pinned_sheet: str,
 
 
 def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
-               rejected_sheets: frozenset[str]) -> LayoutOutcome:
+               rejected_sheets: frozenset[str], proposal: dict | None = None) -> LayoutOutcome:
     evidence = workbook_evidence(ctx.sheets)
     resolved: dict = {}
     recoverable: dict = {}
@@ -293,6 +295,11 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
         resolved.update(proposal=proposal, layout=layout, frame=frame,
                          conversion=conversion)
 
+    if proposal is not None:
+        jsonschema.validate(proposal, LAYOUT_SCHEMA)
+        validate(proposal)
+        return LayoutOutcome(**resolved)
+
     try:
         request_structured(
             client,
@@ -355,7 +362,7 @@ def _column_inventory(sheet, frame, layout: ResolvedLayout) -> list[dict]:
 
 
 def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
-               journal: Journal) -> tuple[MeasurementPlan, dict, PublishedUmr]:
+               journal: Journal, proposal: dict | None = None) -> tuple[MeasurementPlan, dict, PublishedUmr]:
     layout, frame = outcome.layout, outcome.frame
     sheet = ctx.sheets[layout.sheet_name]
     resolved: dict = {}
@@ -374,6 +381,7 @@ def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
         # модели как repair, а не роняет прогон.
         published = publish_umr(scored, layout, plan)
         resolved.update(plan=plan, km=km, published=published)
+        journal.decision(onboarding_plan={"layout": outcome.proposal, "metric": proposal})
 
     base_messages = metric_messages(
         _column_inventory(sheet, frame, layout), ctx.documents,
@@ -381,8 +389,11 @@ def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
          "first_data_row": layout.first_data_row,
          "last_data_row": layout.last_data_row},
     )
-    request_structured(client, base_messages, METRIC_SCHEMA, "metric",
-                       validate_extra=validate)
+    if proposal is None:
+        request_structured(client, base_messages, METRIC_SCHEMA, "metric", validate_extra=validate)
+    else:
+        jsonschema.validate(proposal, METRIC_SCHEMA)
+        validate(proposal)
     if resolved["km"]["percent_domain_columns"]:
         journal.warning(
             "score_domain_percent",

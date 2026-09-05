@@ -124,16 +124,14 @@ def test_row_formula_row_stays_data(tmp_path):
     assert layout.last_data_row == 3
 
 
-def test_numeric_column_cannot_be_reference_answer(tmp_path):
-    # Колонка оценок 0/1, названная эталоном, блокирует план метрики без
-    # шанса на repair (роли заморожены): физика отвергает её сразу.
-    rows = [["q", "a", "Разметчик 1", "Разметчик 2"], ["в1", "о1", 1, 0], ["в2", "о2", 0, 1]]
+def test_numeric_reference_is_not_confused_with_a_score_column(tmp_path):
+    rows = [["q", "a", "Эталон числа"], ["сколько", "42", 42]]
     answer = layout_answer(roles={"query_id": None, "session_id": None,
                                   "input_query": "A", "output_answer": "B",
                                   "scenario": None, "assessor_id": None,
-                                  "reference_answers": ["C", "D"]})
-    with pytest.raises(LayoutError, match="числов"):
-        resolve_layout(answer, _sheets(tmp_path, rows), BASKET, "", frozenset())
+                                  "reference_answers": ["C"]})
+    layout = resolve_layout(answer, _sheets(tmp_path, rows), BASKET, "", frozenset())
+    assert layout.roles["reference_answers"] == ["Эталон числа"]
 
 
 def test_text_reference_answer_is_accepted(tmp_path):

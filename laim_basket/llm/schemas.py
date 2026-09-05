@@ -101,7 +101,7 @@ _SOURCE = {
                            "prediction", "target"]},
         "normalization": {
             "oneOf": [
-                {"enum": ["numeric", "label"]},
+                {"enum": ["numeric", "percent", "label"]},
                 {"type": "object", "minProperties": 1,
                  "additionalProperties": {"type": "number"}},
             ],
@@ -116,9 +116,27 @@ METRIC_SCHEMA = {
     "additionalProperties": False,
     "required": ["quotes", "metric_name", "method", "sources", "reducer",
                  "missing_policy", "majority_denominator", "scale",
-                 "reported_value", "threshold", "comparator"],
+                 "reported_value", "threshold", "comparator", "assessment_mode", "evaluation"],
     "properties": {
         "quotes": _QUOTES,
+        "assessment_mode": {"enum": ["qa", "turn_with_history", "dialogue"]},
+        "evaluation": {
+            "type": "object", "additionalProperties": False,
+            "required": ["rubric", "score_values", "higher_is_better", "defect_threshold",
+                         "required_evidence", "prediction_observable", "observation_profile"],
+            "properties": {
+                "rubric": {"type": "string", "minLength": 1},
+                "score_values": {"type": "array", "minItems": 2, "uniqueItems": True,
+                                 "items": {"type": "number"}},
+                "higher_is_better": {"type": "boolean"},
+                "defect_threshold": {"type": "number"},
+                "required_evidence": {"type": "array", "uniqueItems": True,
+                    "items": {"enum": ["history", "knowledge_context", "tool_results", "customer_context"]}},
+                "external_party": {"type": ["string", "null"]},
+                "prediction_observable": {"enum": ["route_label", "output_answer", None]},
+                "observation_profile": {"enum": ["fipa_external_reply_v1", "aef_boundary_v1", "state_single_request_v1"]},
+            },
+        },
         "metric_name": {"type": "string", "minLength": 1},
         "method": {"enum": ["identity", "accuracy", "mean_criteria",
                              "all_criteria", "all_assessors", "majority"]},

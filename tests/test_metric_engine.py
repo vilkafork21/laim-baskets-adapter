@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import layout_answer, metric_answer, source
+from conftest import layout_answer, metric_answer, source, evaluation_answer
 from helpers import make_workbook
 from laim_basket.errors import NotEvaluableError
 from laim_basket.metric.engine import evaluate
@@ -26,9 +26,9 @@ def _prepared(tmp_path, scores):
     return layout, frame, sheet
 
 
-def _percent_plan(layout, frame, sheet, raw: str):
+def _percent_plan(layout, frame, sheet, raw: str, normalization="percent"):
     return resolve_measurement_plan(
-        metric_answer(scale="percent", sources=[source("C", "final_score")],
+        metric_answer(scale="percent", evaluation=evaluation_answer(score_values=[0, 0.7, 0.85, 1]), sources=[source("C", "final_score", normalization)],
                       reported_value={"state": "declared", "value": None, "raw": raw}),
         layout, frame, sheet)
 
@@ -47,7 +47,7 @@ def test_percent_point_scores_are_normalized_to_ratio(tmp_path):
 
 def test_ratio_scores_under_percent_scale_are_left_alone(tmp_path):
     layout, frame, sheet = _prepared(tmp_path, [1, 0, 1])
-    plan = _percent_plan(layout, frame, sheet, "66,7%")
+    plan = _percent_plan(layout, frame, sheet, "66,7%", normalization="numeric")
 
     scored, km = evaluate(frame, layout, plan)
 
@@ -68,7 +68,7 @@ def test_percent_point_scores_under_ratio_scale_are_normalized_too(tmp_path):
     # процентные пункты, и модель лишь иначе назвала шкалу.
     layout, frame, sheet = _prepared(tmp_path, [70, 100, 85])
     plan = resolve_measurement_plan(
-        metric_answer(scale="ratio", sources=[source("C", "final_score")],
+        metric_answer(scale="ratio", evaluation=evaluation_answer(score_values=[0, 0.7, 0.85, 1]), sources=[source("C", "final_score", "percent")],
                       reported_value={"state": "declared", "value": None, "raw": "0.85"}),
         layout, frame, sheet)
 
@@ -82,7 +82,7 @@ def test_percent_point_scores_under_ratio_scale_are_normalized_too(tmp_path):
 def test_raw_scale_keeps_scores_above_one(tmp_path):
     layout, frame, sheet = _prepared(tmp_path, [2, 1, 2])
     plan = resolve_measurement_plan(
-        metric_answer(scale="raw", sources=[source("C", "final_score")],
+        metric_answer(scale="raw", evaluation=evaluation_answer(score_values=[0, 1, 2]), sources=[source("C", "final_score")],
                       reported_value={"state": "declared", "value": None, "raw": "1.67"}),
         layout, frame, sheet)
 
@@ -97,7 +97,7 @@ def test_raw_scale_keeps_scores_above_one(tmp_path):
 def test_small_percent_reconciliation_uses_ratio_quantum(tmp_path, score, expected):
     layout, frame, sheet = _prepared(tmp_path, [score])
     plan = resolve_measurement_plan(
-        metric_answer(reported_value={"state": "declared", "value": None, "raw": "0.9%"}),
+        metric_answer(evaluation=evaluation_answer(score_values=[0, 0.009, 0.011, 0.9, 1]), reported_value={"state": "declared", "value": None, "raw": "0.9%"}),
         layout, frame, sheet)
     _, km = evaluate(frame, layout, plan)
     assert km["reconciliation"]["status"] == expected
