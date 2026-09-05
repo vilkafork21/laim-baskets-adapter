@@ -47,8 +47,7 @@ def reported_quantum(plan: MeasurementPlan) -> Decimal:
     quantum = Decimal(1).scaleb(value.as_tuple().exponent)
     if plan.scale == "percent" and not percent and abs(value) <= 1:
         return quantum * 100
-    # Зеркало _parse_reported: доля с «%» (abs <= 1) остаётся в своём домене.
-    if plan.scale == "ratio" and percent and abs(value) > 1:
+    if plan.scale == "ratio" and percent:
         return quantum / 100
     return quantum
 
@@ -199,7 +198,7 @@ def _parse_reported(reported: dict, scale: str) -> tuple[Decimal | None, str | N
     precision = max(0, -value.as_tuple().exponent)
     if scale == "percent" and not percent_token and abs(value) <= 1:
         value *= 100
-    elif scale == "ratio" and percent_token and abs(value) > 1:
+    elif scale == "ratio" and percent_token:
         value /= 100
     return value, token, precision
 

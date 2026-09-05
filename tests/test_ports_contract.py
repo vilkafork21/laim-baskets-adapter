@@ -25,9 +25,9 @@ def _load_main():
 
 
 def _run_main(tmp_path, monkeypatch, responses, rows=None, *, run_context=None,
-              package_name="CI09000001_test"):
+              package_name="CI09000001_test", validation=()):
     package = make_package(
-        tmp_path, {"Лист1": {"rows": rows or ROWS}}, name=package_name
+        tmp_path, {"Лист1": {"rows": rows or ROWS}}, name=package_name, validation=validation
     )
     main = _load_main()
     client = FakeClient(responses)
@@ -153,3 +153,18 @@ def test_package_name_keeps_cyrillic_identity(tmp_path):
     name = node._package_name(basket)
 
     assert "basket" not in name and "агента" in name and " " not in name
+
+
+@pytest.mark.parametrize("scale", ["ratio", "percent"])
+def test_small_percent_publishes_same_ratio_baseline(tmp_path, monkeypatch, scale):
+    proposal = metric_answer(scale=scale, reported_value={
+        "state": "declared", "value": None, "raw": "0.9%"})
+    ports = _run_main(
+        tmp_path, monkeypatch, [layout_answer(), proposal],
+        rows=[["q", "a", "m"], ["вопрос", "ответ", 0.009]],
+        validation=("Ключевая метрика Accuracy равна 0.9%",))
+    baseline = ports["monitoring_metric"]["baseline"]
+    assert baseline["scale"] == "ratio"
+    assert baseline["value"] == pytest.approx(0.009)
+    assert baseline["recomputed_value"] == pytest.approx(0.009)
+    assert baseline["reconciliation"] == "match"

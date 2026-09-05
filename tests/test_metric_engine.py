@@ -90,3 +90,14 @@ def test_raw_scale_keeps_scores_above_one(tmp_path):
 
     assert scored["main_metric"].tolist() == [2.0, 1.0, 2.0]
     assert km["percent_domain_columns"] == []
+
+
+@pytest.mark.parametrize("score,expected", [(0.009, "match"), (0.011, "mismatch"),
+                                           (0.9, "mismatch")])
+def test_small_percent_reconciliation_uses_ratio_quantum(tmp_path, score, expected):
+    layout, frame, sheet = _prepared(tmp_path, [score])
+    plan = resolve_measurement_plan(
+        metric_answer(reported_value={"state": "declared", "value": None, "raw": "0.9%"}),
+        layout, frame, sheet)
+    _, km = evaluate(frame, layout, plan)
+    assert km["reconciliation"]["status"] == expected
