@@ -47,8 +47,7 @@ def reported_quantum(plan: MeasurementPlan) -> Decimal:
     quantum = Decimal(1).scaleb(value.as_tuple().exponent)
     if plan.scale == "percent" and not percent and abs(value) <= 1:
         return quantum * 100
-    # Зеркало _parse_reported: доля с «%» (abs <= 1) остаётся в своём домене.
-    if plan.scale == "ratio" and percent and abs(value) > 1:
+    if plan.scale == "ratio" and percent:
         return quantum / 100
     return quantum
 
@@ -112,23 +111,6 @@ def _canonicalize_score(method: str, raw_sources: list[dict]) -> tuple[str, list
     return method, sources
 
 
-def _scores_group_scoped(frame, layout: ResolvedLayout, column_ids: list[str]) -> bool:
-    """Каждая группа имеет ровно один непустой score и есть группы из >1 строк."""
-    groups: dict[object, list[int]] = {}
-    for index, group in enumerate(frame["reference_group_id"].tolist()):
-        groups.setdefault(group, []).append(index)
-    if all(len(indexes) <= 1 for indexes in groups.values()):
-        return False
-    return all(
-        sum(
-            not _blank(frame[layout.column_names[column]].iloc[index])
-            for index in indexes
-        ) == 1
-        for column in column_ids
-        for indexes in groups.values()
-    )
-
-
 def vertically_merged_source(sheet: RawSheet, layout: ResolvedLayout, column_id: str) -> bool:
     column = column_index_from_string(column_id) - 1
     first = layout.first_data_row - 1
@@ -155,31 +137,6 @@ def _formula_components(sheet: RawSheet, layout: ResolvedLayout,
     return result
 
 
-def _assessment_mode(sheet: RawSheet, layout: ResolvedLayout, frame,
-                     column_ids: list[str]) -> str:
-    """Режим оценки определяет физическая форма корзины, не мнение модели."""
-    kind = layout.grouping["kind"]
-    if kind == "blob_row":
-        return "dialogue"
-    if kind == "none":
-        return "qa"
-    if kind == "column":
-        return "turn_with_history"
-    # merged_rows: score, физически заданный один раз на многострочную группу
-    # (vertical merge либо единственная непустая ячейка), делает единицу
-    # оценки dialogue независимо от вида таблицы.
-    merged_sources = [
-        column for column in column_ids
-        if vertically_merged_source(sheet, layout, column)
-    ]
-    if merged_sources and len(merged_sources) == len(column_ids):
-        return "dialogue"
-    grouped = all(name in frame for name in ("reference_group_id", "turn_index"))
-    if grouped and _scores_group_scoped(frame, layout, column_ids):
-        return "dialogue"
-    return "turn_with_history"
-
-
 def _parse_reported(reported: dict, scale: str) -> tuple[Decimal | None, str | None, int]:
     state = reported["state"]
     if state == "ambiguous":
@@ -199,7 +156,7 @@ def _parse_reported(reported: dict, scale: str) -> tuple[Decimal | None, str | N
     precision = max(0, -value.as_tuple().exponent)
     if scale == "percent" and not percent_token and abs(value) <= 1:
         value *= 100
-    elif scale == "ratio" and percent_token and abs(value) > 1:
+    elif scale == "ratio" and percent_token:
         value /= 100
     return value, token, precision
 
@@ -262,7 +219,11 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
             ),
         )
 
-    assessment_mode = _assessment_mode(sheet, layout, frame, column_ids)
+    assessment_mode = proposal["assessment_mode"]
+    if assessment_mode != "qa" and not all(
+        name in frame for name in ("reference_group_id", "turn_index")
+    ):
+        raise NotEvaluableError("Методика требует явную группу и порядок реплик")
     evaluation_unit = "dialogue" if assessment_mode == "dialogue" else "turn"
     if evaluation_unit == "turn" and layout.grouping["kind"] == "merged_rows":
         merged_sources = [
@@ -357,6 +318,7 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
         basket_id=layout.basket_id,
         metric_name=proposal["metric_name"],
         assessment_mode=assessment_mode,
+        evaluation=proposal["evaluation"],
         method=method,
         sources=tuple(sources),
         missing_policy=missing_policy,

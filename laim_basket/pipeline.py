@@ -92,9 +92,14 @@ def run_package(
     client=None,
     sheet_name: str = "",
     run_context: dict[str, object] | None = None,
+    onboarding_plan: dict | None = None,
 ) -> RunResult:
     """sheet_name задаёт обязательный лист корзины (книги с листами нескольких
     агентов различимы только оператором); пустое значение — автоопределение."""
+    if onboarding_plan is not None:
+        if not isinstance(onboarding_plan, dict) or set(onboarding_plan) != {"layout", "metric"}:
+            raise ValueError("onboarding_plan требует объекты layout и metric")
+        sheet_name = onboarding_plan["layout"]["sheet_name"]
     root = Path(out_dir)
     reset_out(root)
     debug = root / "debug"
@@ -116,7 +121,8 @@ def run_package(
     for attempt in (1, 2):
         stage_started = time.monotonic()
         try:
-            outcome = tasks.run_layout(llm, context, journal, sheet_name, rejected)
+            outcome = tasks.run_layout(llm, context, journal, sheet_name, rejected,
+                                       proposal=onboarding_plan["layout"] if onboarding_plan else None)
         except SpecError as exc:
             failed_sheet = exc.details.get("sheet")
             if fallback is not None:
@@ -157,7 +163,8 @@ def run_package(
 
         stage_started = time.monotonic()
         try:
-            plan, km, published = tasks.run_metric(llm, context, outcome, journal)
+            plan, km, published = tasks.run_metric(llm, context, outcome, journal,
+                                                    proposal=onboarding_plan["metric"] if onboarding_plan else None)
             journal.stage("metric", "ok", _ms(stage_started))
             journal.decision(assessment_mode=plan.assessment_mode,
                              metric=plan.metric_name, method=plan.method,

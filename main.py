@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from measurement import VERSION, definition_id
+
 import faulthandler
 import json
 import logging
@@ -13,6 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from laim_basket.config import llm_config
+from laim_basket.export.umr import export_umr_workbook
 from laim_basket.errors import BasketError, PackageError
 from laim_basket.llm.client import LlmClient
 from laim_basket.models import RunResult
@@ -98,7 +101,7 @@ def _normalized(value: object, scale: str) -> tuple[float, str]:
 def _monitoring_metric(result: RunResult) -> dict[str, object]:
     plan = result.measurement_plan
     contract = {
-        "contract_version": "laim-monitoring-metric.v2",
+        "contract_version": VERSION,
         "umr_version": "laim-umr.v2",
     }
     if plan is None:
@@ -222,6 +225,7 @@ def main(
     model_id: str = "glm-5.2",
     sheet_name: str = "",
     run_context: dict[str, object] | None = None,
+    onboarding_plan: dict | None = None,
 ):
     """Запустить полный laim-basket внутри одной Sber DS-ноды."""
     # Платформа не настраивает logging: без обработчика записи INFO из
@@ -252,7 +256,7 @@ def main(
     try:
         result = run_package(
             package, out_dir, client=client, sheet_name=sheet_name,
-            run_context=run_context,
+            run_context=run_context, onboarding_plan=onboarding_plan,
         )
     except BasketError as exc:
         # Платформа показывает только str(exc), а debug-каталог гибнет вместе
@@ -264,6 +268,17 @@ def main(
         )
         raise
     metric = _monitoring_metric(result)
+    if result.measurement_plan is not None and metric["status"] == "computed":
+        metric["solution_version"] = (run_context or {}).get("solution_version")
+        metric["evaluation"] = result.measurement_plan.evaluation
+        metric["artifact_hashes"] = result.report["input_sha256"]
+        metric["definition_id"] = definition_id(metric)
+        metric.update(status="not_computable", reason_code="measurement_review_required",
+                      reason="Определение КМ требует однократного подтверждения при подключении")
+    result.umr.frame["dataset_role"] = "reference"
+    if metric.get("definition_id"):
+        result.umr.frame["definition_id"] = metric["definition_id"]
+    export_umr_workbook(result.umr, out_dir / result.excel_name)
     logger.info(
         "Порты: monitoring_metric.status=%s%s, строк reference_umr %d",
         metric["status"],

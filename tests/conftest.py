@@ -32,11 +32,24 @@ def layout_answer(**overrides) -> dict:
     return answer
 
 
+def evaluation_answer(**overrides) -> dict:
+    result = {
+        "rubric": "Оценить правильность ответа: 1 — верно, 0 — неверно",
+        "score_values": [0, 1], "higher_is_better": True, "defect_threshold": 1,
+        "required_evidence": [], "prediction_observable": None,
+        "observation_profile": "state_single_request_v1",
+    }
+    result.update(overrides)
+    return result
+
+
 def metric_answer(**overrides) -> dict:
     """Валидный ответ LLM на задачу метрики: identity по колонке C."""
     answer = {
         "quotes": {"metric": ["Accuracy 0.5"]},
         "metric_name": "Accuracy",
+        "assessment_mode": "qa",
+        "evaluation": evaluation_answer(),
         "method": "identity",
         "sources": [source("C", "final_score")],
         "reducer": "mean",

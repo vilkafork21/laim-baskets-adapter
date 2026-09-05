@@ -45,6 +45,7 @@ def _plan(mode: str, sources: list[dict], reducer: str = "mean") -> MeasurementP
         threshold=None, comparator=None, scale="ratio", precision=3,
         reported_value=None, reported_raw=None,
         evidence={"metric": ("doc-1:p0001",)},
+        evaluation={"score_values": [0, 1]},
     )
 
 

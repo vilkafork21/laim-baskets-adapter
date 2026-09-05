@@ -174,19 +174,7 @@ def _present_numbers(region, source: str) -> list | None:
 
 
 def _prove_references(region, roles: dict) -> None:
-    """Эталон — текст, идентификатор разметчика — не голос. Колонка оценок,
-    попавшая в эти роли, заблокирует план метрики без шанса на repair:
-    роли к тому моменту заморожены."""
-    for source in roles["reference_answers"]:
-        present = _present_numbers(region, source)
-        if present is not None:
-            raise LayoutError(
-                "Колонка эталона содержит только числовые значения — это оценка, "
-                "а не reference_answer",
-                column=source, samples=[str(value) for value in present[:3]],
-                repair_hint="убери колонку из reference_answers; числовые оценки "
-                            "назначает план метрики",
-            )
+    """Идентификатор разметчика не должен подменяться бинарным голосом."""
     assessor = roles.get("assessor_id")
     if isinstance(assessor, dict):
         present = _present_numbers(region, assessor["source"])
