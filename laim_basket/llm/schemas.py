@@ -133,6 +133,15 @@ METRIC_SCHEMA = {
                 "required_evidence": {"type": "array", "uniqueItems": True,
                     "items": {"enum": ["history", "knowledge_context", "tool_results", "customer_context"]}},
                 "external_party": {"type": ["string", "null"]},
+                "route_source": {"oneOf": [
+                    {"type": "object", "additionalProperties": False,
+                     "required": ["envelope", "field"], "properties": {
+                         "envelope": {"const": "outgoing"}, "field": {"const": "receiver"}}},
+                    {"type": "object", "additionalProperties": False,
+                     "required": ["envelope", "field", "part_index"], "properties": {
+                         "envelope": {"enum": ["incoming", "outgoing"]},
+                         "field": {"const": "message"}, "part_index": {"type": "integer", "minimum": 0}}},
+                ]},
                 "prediction_observable": {"enum": ["route_label", "output_answer", None]},
                 "observation_profile": {"enum": ["fipa_external_reply_v1", "aef_boundary_v1", "state_single_request_v1"]},
             },

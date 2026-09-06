@@ -383,7 +383,7 @@ def test_dialogue_with_merged_rows_synthesizes_integer_session_id(tmp_path):
     sheets = read_workbook(path)
     layout = resolve_layout(_proposal(
         {"input_query": "A", "output_answer": "B"},
-        grouping={"kind": "merged_rows", "column": None},
+        grouping={"kind": "merged_rows", "column": "B"},
     ), sheets, "CI1", "", frozenset())
     grouped = apply_grouping(sheets["Sheet"], layout.region, layout.transform_config())
     frame, _ = build_canon(grouped, layout.region, layout.transform_config())

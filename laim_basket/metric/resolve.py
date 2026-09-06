@@ -83,34 +83,6 @@ def _validate_source_contract(method: str, sources: list[dict[str, object]]) -> 
                 normalized[norm] = mapped
 
 
-def _canonicalize_score(method: str, raw_sources: list[dict]) -> tuple[str, list[dict]]:
-    sources = [dict(source) for source in raw_sources]
-    expected_role = {
-        "identity": "final_score",
-        "mean_criteria": "criterion",
-        "all_criteria": "criterion",
-        "majority": "assessor_vote",
-        "all_assessors": "assessor_vote",
-    }.get(method)
-    if expected_role is not None:
-        matching = [source for source in sources if source["role"] == expected_role]
-        minimum = 1 if method == "identity" else 2
-        if len(matching) >= minimum:
-            sources = matching
-    elif method == "accuracy":
-        predictions = [source for source in sources if source["role"] == "prediction"]
-        targets = [source for source in sources if source["role"] == "target"]
-        if len(predictions) == len(targets) == 1:
-            sources = [predictions[0], targets[0]]
-    if len(sources) == 1 and (
-        sources[0]["role"] == "final_score"
-        or method in ("mean_criteria", "all_criteria")
-    ):
-        method = "identity"
-        sources[0]["role"] = "final_score"
-    return method, sources
-
-
 def vertically_merged_source(sheet: RawSheet, layout: ResolvedLayout, column_id: str) -> bool:
     column = column_index_from_string(column_id) - 1
     first = layout.first_data_row - 1
@@ -192,7 +164,15 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
             f"План не соответствует схеме: {exc.message}", path=exc.json_path,
         ) from exc
 
-    method, sources = _canonicalize_score(proposal["method"], proposal["sources"])
+    evaluation = proposal["evaluation"]
+    if (evaluation["observation_profile"] == "fipa_external_reply_v1"
+            and evaluation["prediction_observable"] == "route_label"
+            and "route_source" not in evaluation):
+        raise NotEvaluableError("FIPA route_label требует явный evaluation.route_source из протокола")
+    if "route_source" in evaluation and evaluation["observation_profile"] != "fipa_external_reply_v1":
+        raise NotEvaluableError("route_source поддержан только для FIPA")
+
+    method, sources = proposal["method"], proposal["sources"]
     column_ids = [source["column_id"] for source in sources]
     if len(column_ids) != len(set(column_ids)):
         raise NotEvaluableError("Одна физическая колонка повторена в плане")
@@ -243,7 +223,18 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
         groups: dict[object, list[int]] = {}
         for index, group in enumerate(frame["reference_group_id"].tolist()):
             groups.setdefault(group, []).append(index)
+        row_groups = dict(zip(frame["source_row_id"], frame["reference_group_id"]))
         for column in column_ids:
+            physical_column = column_index_from_string(column) - 1
+            for row1, col1, row2, col2 in sheet.merged:
+                if col1 <= physical_column <= col2 and len({
+                    row_groups[row] for row in range(row1 + 1, row2 + 2)
+                    if row in row_groups
+                }) > 1:
+                    raise NotEvaluableError(
+                        "Одна merged-оценка покрывает несколько dialogue",
+                        column_id=column, first_row=row1 + 1, last_row=row2 + 1,
+                    )
             name = layout.column_names[column]
             if any(
                 len({

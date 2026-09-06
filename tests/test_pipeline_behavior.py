@@ -36,7 +36,7 @@ def test_merged_dialogue_publishes_triples(tmp_path):
                               "input_query": "B", "output_answer": "C",
                               "scenario": None, "assessor_id": None,
                               "reference_answers": []},
-                       grouping={"kind": "merged_rows", "column": None}),
+                       grouping={"kind": "merged_rows", "column": "A"}),
         metric_answer(assessment_mode="dialogue", sources=[{"column_id": "D", "role": "final_score",
                                  "normalization": "numeric",
                                  "polarity": "direct"}])]))

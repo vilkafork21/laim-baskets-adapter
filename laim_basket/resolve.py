@@ -157,8 +157,8 @@ def _prove_roles(roles: dict, grouping: dict, blob: dict | None) -> None:
         raise LayoutError("roles.session_id и grouping.column должны совпадать")
     if (kind == "column" and grouping["column"] in claimed
             and claimed[grouping["column"]] not in {"query_id", "session_id"}):
-        grouping.update(kind="none", column=None)
-        kind = "none"
+        raise LayoutError("grouping.column занята другой канонической ролью",
+                          column=grouping["column"], role=claimed[grouping["column"]])
     if kind == "column" and grouping["column"] is None:
         raise LayoutError("grouping=column требует column")
 
@@ -254,10 +254,12 @@ def resolve_layout(proposal: dict, sheets: dict[str, RawSheet], basket_id: str,
         raise LayoutError("Выбран неизвестный лист", sheet=sheet_name,
                           available=list(sheets))
     sheet = sheets[sheet_name]
-    if proposal["grouping"]["kind"] != "column":
-        # Для остальных видов группировки поле не имеет смысла: игнорировать
-        # безопаснее, чем ронять валидный прогон из-за совещательного шума.
-        proposal["grouping"]["column"] = None
+    kind = proposal["grouping"]["kind"]
+    anchor = proposal["grouping"]["column"]
+    if kind in {"column", "merged_rows"} and anchor is None:
+        raise LayoutError(f"grouping={kind} требует явную column")
+    if kind in {"none", "blob_row"} and anchor is not None:
+        raise LayoutError(f"grouping={kind} требует column=null")
 
     header_rows = list(proposal["header_rows"])
     if header_rows != sorted(header_rows) or any(
@@ -268,28 +270,20 @@ def resolve_layout(proposal: dict, sheets: dict[str, RawSheet], basket_id: str,
         raise LayoutError("После заголовка нет строк данных", header_rows=header_rows)
     first_data0 = header_rows[-1]
 
-    query_index, last_data0 = _data_bounds(sheet, proposal, first_data0)
-    vertical_data_merge = any(
-        row2 > row1 and row2 >= first_data0 and row1 <= last_data0
-        for row1, _c1, row2, _c2 in sheet.merged
-    )
-    vertical_query_merge = any(
-        row2 > row1 and row2 >= first_data0 and row1 <= last_data0
-        and col1 <= query_index <= col2
-        for row1, col1, row2, col2 in sheet.merged
-    )
-    if vertical_query_merge or (
-        proposal["grouping"]["kind"] == "none" and vertical_data_merge
-    ):
-        proposal["grouping"] = {"kind": "merged_rows", "column": None}
+    _, last_data0 = _data_bounds(sheet, proposal, first_data0)
+    if kind == "merged_rows":
+        anchor_index = _column_index(anchor, sheet.n_cols, "grouping.column")
+        if not any(row2 > row1 and row2 >= first_data0 and row1 <= last_data0
+                   and col1 <= anchor_index <= col2
+                   for row1, col1, row2, col2 in sheet.merged):
+            raise LayoutError("grouping=merged_rows: column не содержит вертикальных объединений",
+                              column=anchor)
 
     region = build_region(sheet, header_rows, last_data0 + 1)
     roles, grouping, blob, weight = _materialize(proposal, sheet, region)
     _prove_roles(roles, grouping, blob)
     _prove_references(region, roles)
     _prove_weight(sheet, region, weight)
-    if grouping["kind"] == "merged_rows" and not vertical_data_merge:
-        raise LayoutError("grouping=merged_rows не подтвержден vertical merge")
 
     canonical = {
         "source_row_id", "query_id", "session_id", "input_query_count",

@@ -60,7 +60,7 @@ def test_one_column_cannot_carry_two_roles(tmp_path):
             BASKET, "", frozenset())
 
 
-def test_vertical_merge_forces_merged_rows(tmp_path):
+def test_vertical_merge_does_not_override_explicit_none(tmp_path):
     rows = [["s", "q", "a", "m"], [1, "в1", "о1", 1], [None, "в2", "о2", None]]
     layout = resolve_layout(
         layout_answer(roles={"query_id": None, "session_id": "A",
@@ -69,7 +69,7 @@ def test_vertical_merge_forces_merged_rows(tmp_path):
                           "reference_answers": []}),
         _sheets(tmp_path, rows, merges=["A2:A3", "D2:D3"]),
         BASKET, "", frozenset())
-    assert layout.grouping["kind"] == "merged_rows"
+    assert layout.grouping["kind"] == "none"
 
 
 def test_non_integer_weight_is_layout_error(tmp_path):
