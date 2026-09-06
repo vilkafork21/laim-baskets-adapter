@@ -43,7 +43,8 @@ def _number_groups(roots: list[int]) -> list[int]:
     return [order[root] for root in roots]
 
 
-def _merged_rows(sheet: RawSheet, region: TableRegion) -> tuple[list[list[object]], list[int], int]:
+def _merged_rows(sheet: RawSheet, region: TableRegion, column: str) -> tuple[list[list[object]], list[int], int]:
+    anchor = region.columns.index(column)
     sets = _DisjointSets(len(region.rows))
     rows = [list(row) for row in region.rows]
     filled = 0
@@ -52,8 +53,9 @@ def _merged_rows(sheet: RawSheet, region: TableRegion) -> tuple[list[list[object
         indexes = list(range(max(row1, first) - first, min(row2, last) - first + 1))
         if len(indexes) < 2:
             continue
-        for index in indexes[1:]:
-            sets.union(indexes[0], index)
+        if col1 <= anchor <= col2:
+            for index in indexes[1:]:
+                sets.union(indexes[0], index)
         for column in range(col1, min(col2, len(region.columns) - 1) + 1):
             top = rows[indexes[0]][column]
             for index in indexes[1:]:
@@ -351,7 +353,7 @@ def apply_grouping(sheet: RawSheet, region: TableRegion, config: dict[str, objec
     if kind == "none":
         return GroupedTable(list(region.columns), region.rows, region.source_rows, None)
     if kind == "merged_rows":
-        rows, groups, filled = _merged_rows(sheet, region)
+        rows, groups, filled = _merged_rows(sheet, region, grouping["column"])
         return GroupedTable(
             list(region.columns), rows, region.source_rows, groups,
             accounting={"n_groups": len(set(groups)), "merged_cells_filled": filled},

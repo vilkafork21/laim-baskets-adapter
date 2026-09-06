@@ -180,7 +180,7 @@ def test_grouped_blank_input_query_rows_dropped_after_repair(tmp_path):
         roles={"query_id": None, "session_id": "A", "input_query": "B",
                "output_answer": "C", "scenario": None, "assessor_id": None,
                "reference_answers": []},
-        grouping={"kind": "merged_rows", "column": None})
+        grouping={"kind": "merged_rows", "column": "A"})
     client = FakeClient([answer, answer, answer])
 
     outcome = tasks.run_layout(client, ctx, journal, "", frozenset())
@@ -195,7 +195,7 @@ def test_later_bad_repair_does_not_discard_recoverable_layout(tmp_path):
     rows = [["q", "a", "m"], ["в1", "о1", 1], [None, "о2", 0], ["в3", "о3", 1]]
     package = make_package(tmp_path, {"Лист1": {"rows": rows}})
     ctx = tasks.build_run_context(package)
-    bad_repair = layout_answer(grouping={"kind": "merged_rows", "column": None})
+    bad_repair = layout_answer(grouping={"kind": "merged_rows", "column": "A"})
 
     outcome = tasks.run_layout(
         FakeClient([layout_answer(), bad_repair, bad_repair]),

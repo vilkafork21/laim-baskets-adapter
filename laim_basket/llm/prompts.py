@@ -27,8 +27,10 @@ dialogue_markers снимка (АГЕНТ и АГЕНТЫ — разные ма�
 Если ячейка — JSON-массив сообщений с полями role/content или список пар \
 (вопрос, ответ), укажи container=python_list, а маркерами — имена ролей \
 клиента и агента как они записаны в данных (например user и assistant).
-- Группировка должна быть видна в данных (vertical merge, повторяющийся ключ, \
-blob); один только session_id не делает корзину диалоговой.
+- Группировка должна быть видна в данных. Для merged_rows явно задай column: \
+только merge этой колонки определяет границы групп. Merge других колонок — оформление. \
+Для column задай колонку ключа группы, для none/blob_row — column=null. \
+Один только session_id не делает корзину диалоговой.
 - Если ответ агента разложен по двум колонкам (основная ветка + fallback), \
 используй output_answer.coalesce.
 - assessor_id — только идентификатор разметчика, не его вердикт или оценка.
@@ -46,8 +48,21 @@ _METRIC_SYSTEM = """Ты определяешь ключевую метрику 
 отчёте о валидации нет -> state=not_declared, даже если число есть в других \
 документах. Несколько разных кандидатов без возможности выбрать -> \
 state=ambiguous.
-- Режим оценки (qa/dialogue/turn_with_history) не выбирай: его определяет \
-физическая форма данных.
+- assessment_mode задаёт методика: qa — отдельный ответ без истории, \
+turn_with_history — ответ с предшествующим контекстом, dialogue — итог всего диалога. \
+В quotes процитируй основание единицы. Merge, session_id и упаковка Excel не определяют её.
+- evaluation — кандидат определения для однократного ревью: rubric описывает итоговую \
+оценку main_metric, score_values задаёт шкалу независимо от встреченных значений; \
+higher_is_better и defect_threshold задают направление и границу дефекта. \
+required_evidence перечисляет обязательные факты, prediction_observable — наблюдаемое \
+предсказание (не выводи route_label из названия accuracy). observation_profile требует \
+проверки протокола трассировки при подключении. Для FIPA route_label \
+обязательно укажи route_source из описания протокола: envelope=incoming/outgoing, \
+field=message с part_index (индекс с нуля) либо outgoing/receiver. Короткий текст \
+или echo не доказывают наличие класса. Если источника нет — не выдумывай его. \
+Эти предложения не являются допуском.
+- normalization=numeric сохраняет числовую шкалу; percent явно делит процентные пункты \
+на 100. Максимум колонки не является основанием для преобразования шкалы.
 - sources: колонки по column_id из инвентаря; role: final_score | criterion | \
 assessor_vote | prediction | target. Для prediction/target normalization=label; \
 текстовые оценки задавай value_map-объектом в normalization.
@@ -116,7 +131,7 @@ def metric_messages(column_inventory: list[dict], documents: tuple[dict, ...],
         _documents_context(documents),
         "ИНВЕНТАРЬ КОЛОНОК КАНОНА:",
         _dump(column_inventory),
-        "ФИЗИЧЕСКАЯ ФОРМА КОРЗИНЫ (определена кодом, не выбирается):",
+        "ФИЗИЧЕСКАЯ ФОРМА КОРЗИНЫ (не определяет семантическую единицу):",
         _dump(assessment_facts),
         "Определи ключевую метрику и порядок её расчёта.",
         f"JSON SCHEMA:\n{_dump(METRIC_SCHEMA)}",

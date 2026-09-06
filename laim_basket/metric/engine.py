@@ -28,10 +28,13 @@ def _normalizer(source: dict[str, object]):
     normalization = source["normalization"]
     if normalization == "label":
         return lambda value: None if _blank(value) else normalize_key(value)
-    if normalization == "numeric":
+    if isinstance(normalization, str) and normalization in {"numeric", "percent"}:
         def base(value: object) -> Decimal | None:
             try:
-                return _numeric(value)
+                number = _numeric(value)
+                if normalization == "percent" and number is not None and not str(value).strip().endswith("%"):
+                    number /= 100
+                return number
             except MeasurementPlanError:
                 # Нечисловой текст в колонке оценки — пропуск в данных, а не
                 # поломка плана: решение принимает missing_policy, как для пустой
@@ -66,25 +69,6 @@ def _normalizer(source: dict[str, object]):
     return inverted
 
 
-_PERCENT_DOMAIN_MAX = Decimal(100)
-
-
-def _percent_domain(values: list[object], column_id: str) -> list[object] | None:
-    """Оценки в процентных пунктах (0-100 без знака %) при шкале доли
-    (percent или ratio) приводятся к долям; иначе main_metric ушёл бы
-    потребителям на 0-100, а пересчёт КМ — умноженным на 100 (LAIM-0189).
-    Шкала raw (оценка 0-2 и подобные) не трогается."""
-    present = [value for value in values if value is not None]
-    if not present or max(present) <= 1:
-        return None
-    if max(present) > _PERCENT_DOMAIN_MAX:
-        raise NotEvaluableError(
-            "Оценки колонки выходят за домен percent (0-100)",
-            column_id=column_id, max_value=str(max(present)),
-        )
-    return [None if value is None else value / _PERCENT_DOMAIN_MAX for value in values]
-
-
 def source_values(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> dict[str, list[object]]:
     return {column_id: values for column_id, values, _ in _sources(frame, layout, plan)}
 
@@ -94,10 +78,7 @@ def _sources(frame, layout: ResolvedLayout, plan: MeasurementPlan):
         column_id = source["column_id"]
         normalizer = _normalizer(source)
         values = [normalizer(value) for value in frame[layout.column_names[column_id]].tolist()]
-        normalized = None
-        if plan.scale in ("percent", "ratio") and source["normalization"] == "numeric":
-            normalized = _percent_domain(values, column_id)
-        yield column_id, normalized if normalized is not None else values, normalized is not None
+        yield column_id, values, source["normalization"] == "percent"
 
 
 def _unit_records(frame, values: dict[str, list[object]], plan: MeasurementPlan) -> list[dict[str, object]]:
@@ -232,6 +213,9 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
     recomputed = sum(
         score * weight for (_record, score), weight in zip(scored, weights)
     ) / total_weight
+    bounds = plan.evaluation["score_values"]
+    if any(float(value) not in bounds for _, value in scored):
+        raise NotEvaluableError("Оценки единиц выходят за объявленную шкалу", bounds=bounds)
     published_recomputed = _published_scale(recomputed, plan.scale)
     # КМ — только заявленная в отчёте о валидации: без неё value и вердикт
     # пусты, пересчёт остаётся информационным полем.

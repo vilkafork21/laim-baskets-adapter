@@ -133,12 +133,19 @@ def test_declared_without_raw_rejected(layout_frame):
             layout, frame, sheet)
 
 
-def test_reported_quantum_keeps_percent_token_in_ratio_domain(layout_frame):
+@pytest.mark.parametrize("raw,scale,value,quantum", [
+    ("0.9%", "ratio", "0.009", "0.001"),
+    ("1%", "ratio", "0.01", "0.01"),
+    ("0%", "ratio", "0", "0.01"),
+    ("90%", "ratio", "0.9", "0.01"),
+    ("0.9%", "percent", "0.9", "0.1"),
+    ("90%", "percent", "90", "1"),
+])
+def test_explicit_percent_value_and_quantum(layout_frame, raw, scale, value, quantum):
     layout, frame, sheet = layout_frame
-    # «0.9%» при scale=ratio парсер оставляет в исходном домене (0.9) —
-    # допуск обязан жить в том же домене (0.1), а не делиться на 100.
     plan = resolve_measurement_plan(
-        metric_answer(reported_value={"state": "declared", "value": 0.9,
-                                      "raw": "0.9%"}),
+        metric_answer(scale=scale, reported_value={"state": "declared", "value": None,
+                                                   "raw": raw}),
         layout, frame, sheet)
-    assert reported_quantum(plan) == Decimal("0.1")
+    assert plan.reported_value == Decimal(value)
+    assert reported_quantum(plan) == Decimal(quantum)

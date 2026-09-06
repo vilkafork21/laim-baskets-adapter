@@ -47,8 +47,7 @@ def reported_quantum(plan: MeasurementPlan) -> Decimal:
     quantum = Decimal(1).scaleb(value.as_tuple().exponent)
     if plan.scale == "percent" and not percent and abs(value) <= 1:
         return quantum * 100
-    # Зеркало _parse_reported: доля с «%» (abs <= 1) остаётся в своём домене.
-    if plan.scale == "ratio" and percent and abs(value) > 1:
+    if plan.scale == "ratio" and percent:
         return quantum / 100
     return quantum
 
@@ -84,51 +83,6 @@ def _validate_source_contract(method: str, sources: list[dict[str, object]]) -> 
                 normalized[norm] = mapped
 
 
-def _canonicalize_score(method: str, raw_sources: list[dict]) -> tuple[str, list[dict]]:
-    sources = [dict(source) for source in raw_sources]
-    expected_role = {
-        "identity": "final_score",
-        "mean_criteria": "criterion",
-        "all_criteria": "criterion",
-        "majority": "assessor_vote",
-        "all_assessors": "assessor_vote",
-    }.get(method)
-    if expected_role is not None:
-        matching = [source for source in sources if source["role"] == expected_role]
-        minimum = 1 if method == "identity" else 2
-        if len(matching) >= minimum:
-            sources = matching
-    elif method == "accuracy":
-        predictions = [source for source in sources if source["role"] == "prediction"]
-        targets = [source for source in sources if source["role"] == "target"]
-        if len(predictions) == len(targets) == 1:
-            sources = [predictions[0], targets[0]]
-    if len(sources) == 1 and (
-        sources[0]["role"] == "final_score"
-        or method in ("mean_criteria", "all_criteria")
-    ):
-        method = "identity"
-        sources[0]["role"] = "final_score"
-    return method, sources
-
-
-def _scores_group_scoped(frame, layout: ResolvedLayout, column_ids: list[str]) -> bool:
-    """Каждая группа имеет ровно один непустой score и есть группы из >1 строк."""
-    groups: dict[object, list[int]] = {}
-    for index, group in enumerate(frame["reference_group_id"].tolist()):
-        groups.setdefault(group, []).append(index)
-    if all(len(indexes) <= 1 for indexes in groups.values()):
-        return False
-    return all(
-        sum(
-            not _blank(frame[layout.column_names[column]].iloc[index])
-            for index in indexes
-        ) == 1
-        for column in column_ids
-        for indexes in groups.values()
-    )
-
-
 def vertically_merged_source(sheet: RawSheet, layout: ResolvedLayout, column_id: str) -> bool:
     column = column_index_from_string(column_id) - 1
     first = layout.first_data_row - 1
@@ -155,31 +109,6 @@ def _formula_components(sheet: RawSheet, layout: ResolvedLayout,
     return result
 
 
-def _assessment_mode(sheet: RawSheet, layout: ResolvedLayout, frame,
-                     column_ids: list[str]) -> str:
-    """Режим оценки определяет физическая форма корзины, не мнение модели."""
-    kind = layout.grouping["kind"]
-    if kind == "blob_row":
-        return "dialogue"
-    if kind == "none":
-        return "qa"
-    if kind == "column":
-        return "turn_with_history"
-    # merged_rows: score, физически заданный один раз на многострочную группу
-    # (vertical merge либо единственная непустая ячейка), делает единицу
-    # оценки dialogue независимо от вида таблицы.
-    merged_sources = [
-        column for column in column_ids
-        if vertically_merged_source(sheet, layout, column)
-    ]
-    if merged_sources and len(merged_sources) == len(column_ids):
-        return "dialogue"
-    grouped = all(name in frame for name in ("reference_group_id", "turn_index"))
-    if grouped and _scores_group_scoped(frame, layout, column_ids):
-        return "dialogue"
-    return "turn_with_history"
-
-
 def _parse_reported(reported: dict, scale: str) -> tuple[Decimal | None, str | None, int]:
     state = reported["state"]
     if state == "ambiguous":
@@ -199,7 +128,7 @@ def _parse_reported(reported: dict, scale: str) -> tuple[Decimal | None, str | N
     precision = max(0, -value.as_tuple().exponent)
     if scale == "percent" and not percent_token and abs(value) <= 1:
         value *= 100
-    elif scale == "ratio" and percent_token and abs(value) > 1:
+    elif scale == "ratio" and percent_token:
         value /= 100
     return value, token, precision
 
@@ -235,7 +164,15 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
             f"План не соответствует схеме: {exc.message}", path=exc.json_path,
         ) from exc
 
-    method, sources = _canonicalize_score(proposal["method"], proposal["sources"])
+    evaluation = proposal["evaluation"]
+    if (evaluation["observation_profile"] == "fipa_external_reply_v1"
+            and evaluation["prediction_observable"] == "route_label"
+            and "route_source" not in evaluation):
+        raise NotEvaluableError("FIPA route_label требует явный evaluation.route_source из протокола")
+    if "route_source" in evaluation and evaluation["observation_profile"] != "fipa_external_reply_v1":
+        raise NotEvaluableError("route_source поддержан только для FIPA")
+
+    method, sources = proposal["method"], proposal["sources"]
     column_ids = [source["column_id"] for source in sources]
     if len(column_ids) != len(set(column_ids)):
         raise NotEvaluableError("Одна физическая колонка повторена в плане")
@@ -262,7 +199,11 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
             ),
         )
 
-    assessment_mode = _assessment_mode(sheet, layout, frame, column_ids)
+    assessment_mode = proposal["assessment_mode"]
+    if assessment_mode != "qa" and not all(
+        name in frame for name in ("reference_group_id", "turn_index")
+    ):
+        raise NotEvaluableError("Методика требует явную группу и порядок реплик")
     evaluation_unit = "dialogue" if assessment_mode == "dialogue" else "turn"
     if evaluation_unit == "turn" and layout.grouping["kind"] == "merged_rows":
         merged_sources = [
@@ -282,7 +223,18 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
         groups: dict[object, list[int]] = {}
         for index, group in enumerate(frame["reference_group_id"].tolist()):
             groups.setdefault(group, []).append(index)
+        row_groups = dict(zip(frame["source_row_id"], frame["reference_group_id"]))
         for column in column_ids:
+            physical_column = column_index_from_string(column) - 1
+            for row1, col1, row2, col2 in sheet.merged:
+                if col1 <= physical_column <= col2 and len({
+                    row_groups[row] for row in range(row1 + 1, row2 + 2)
+                    if row in row_groups
+                }) > 1:
+                    raise NotEvaluableError(
+                        "Одна merged-оценка покрывает несколько dialogue",
+                        column_id=column, first_row=row1 + 1, last_row=row2 + 1,
+                    )
             name = layout.column_names[column]
             if any(
                 len({
@@ -357,6 +309,7 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
         basket_id=layout.basket_id,
         metric_name=proposal["metric_name"],
         assessment_mode=assessment_mode,
+        evaluation=proposal["evaluation"],
         method=method,
         sources=tuple(sources),
         missing_policy=missing_policy,

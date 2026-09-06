@@ -6,6 +6,7 @@ import jsonschema
 import pytest
 
 
+from conftest import evaluation_answer
 from laim_basket.llm.schemas import LAYOUT_SCHEMA, METRIC_SCHEMA
 
 LAYOUT_EXAMPLE = {
@@ -26,6 +27,8 @@ LAYOUT_EXAMPLE = {
 METRIC_EXAMPLE = {
     "quotes": {"metric": ["Ключевая метрика Accuracy равна 0.93"]},
     "metric_name": "Accuracy",
+    "assessment_mode": "qa",
+    "evaluation": evaluation_answer(),
     "method": "identity",
     "sources": [{"column_id": "C", "role": "final_score",
                   "normalization": "numeric", "polarity": "direct"}],

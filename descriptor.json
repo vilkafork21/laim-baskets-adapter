@@ -2,7 +2,7 @@
   "id": "0e854a93-94f1-4ddb-b31d-a6ea4ef9bb08",
   "name": "LAIM baskets adapter",
   "description": "Преобразование test set и трех документов в канонический UMR и контракт КМ",
-  "fullDescription": "Одна атомарная нода: определение структуры, построение UMR, MeasurementPlan и детерминированный расчет КМ.",
+  "fullDescription": "Подключение версии агента: интерпретация артефактов, воспроизводимый расчёт baseline и кандидат определения КМ v3. Требует последующего подтверждения; штатные прогоны используют сохранённое определение. Исправленный onboarding_plan воспроизводится без вызова LLM.",
   "ui": {
     "settings": [
       {
@@ -90,7 +90,7 @@
       "in": true,
       "type": "default",
       "shape": "shape_model",
-      "description": "selection запуска: trusted agent_ci для basket_id и проверки принадлежности пакета",
+      "description": "agent_ci и solution_version подключаемой версии; без solution_version кандидат нельзя подтвердить",
       "required": false,
       "order": 5
     },
@@ -109,7 +109,7 @@
       "in": false,
       "type": "default",
       "shape": "shape_model",
-      "description": "Операционный контракт laim-monitoring-metric.v2; assessment_mode детерминирован физической формой корзины",
+      "description": "Кандидат laim-monitoring-metric.v3: единица оценки из методики; требует подтверждения при подключении",
       "order": 7
     },
     {
@@ -129,6 +129,16 @@
       "shape": "shape_model",
       "description": "Локальный путь к UMR XLSX (тот же лист формата тестового датасета)",
       "order": 9
+    },
+    {
+      "name": "onboarding_plan",
+      "label": "Проверенная разметка и методика",
+      "type": "default",
+      "shape": "shape_model",
+      "required": false,
+      "in": true,
+      "description": "Необязательный JSON layout/metric из km_result.decisions.onboarding_plan: исправление при подключении и повторная компиляция без LLM",
+      "order": 10
     }
   ],
   "script": {
@@ -174,7 +184,8 @@
         "laim_basket/transform/identity.py",
         "laim_basket/transform/region.py",
         "laim_basket/transform/values.py",
-        "laim_basket/umr_schema.py"
+        "laim_basket/umr_schema.py",
+        "measurement.py"
       ],
       "functionName": "main",
       "functionParameters": [],

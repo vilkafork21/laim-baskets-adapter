@@ -68,6 +68,7 @@ class MeasurementPlan:
     basket_id: str
     metric_name: str
     assessment_mode: str
+    evaluation: dict[str, object]
     method: str
     sources: tuple[dict[str, object], ...]
     missing_policy: str
@@ -93,7 +94,8 @@ class MeasurementPlan:
                 "raw": self.reported_raw,
             }
         return {
-            "plan_version": "laim-measurement-plan.v2",
+            "plan_version": "laim-measurement-plan.v3",
+            "evaluation": self.evaluation,
             "basket_id": self.basket_id,
             "metric_name": self.metric_name,
             "assessment_mode": self.assessment_mode,
