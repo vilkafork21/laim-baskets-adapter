@@ -167,6 +167,7 @@ def test_report_metric_is_written_as_formula_and_reproduced(tmp_path):
     contract = node._monitoring_metric(result)
     assert contract["status"] == "computed"
     assert contract["formula"] == 'f1(prediction, target, "macro")'
+    assert contract["contract_version"] == "laim-monitoring-metric.v3"  # явная формула: нужны обновлённые ноды
     assert contract["scoring"]["method"] == "formula"
     assert [s["name"] for s in contract["scoring"]["sources"]] == ["prediction", "target"]
     assert contract["baseline"]["value"] == pytest.approx(0.5833)

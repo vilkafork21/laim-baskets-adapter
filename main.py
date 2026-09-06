@@ -11,6 +11,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
+import laim_monitoring
 from laim_monitoring import contract_formula
 
 from laim_basket.config import llm_config
@@ -93,9 +94,18 @@ def _normalized(value: object, scale: str) -> tuple[float, str]:
 
 def _monitoring_metric(result: RunResult) -> dict[str, object]:
     plan = result.measurement_plan
+    # Совместимость с нодами на старом пакете: готовые методы уходят как v2
+    # (формула — дополнительное поле, старые ноды его не читают), явная
+    # формула требует v3 и обновлённых потребителей.
+    plan = result.measurement_plan
+    version = (
+        laim_monitoring.VERSION if plan is not None and plan.method == "formula"
+        else "laim-monitoring-metric.v2"
+    )
     contract = {
-        "contract_version": "laim-monitoring-metric.v2",
+        "contract_version": version,
         "umr_version": "laim-umr.v2",
+        "laim_monitoring_version": laim_monitoring.__version__,
     }
     if plan is None:
         return {

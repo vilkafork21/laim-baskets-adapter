@@ -126,7 +126,7 @@ def plan_contract(plan: MeasurementPlan) -> dict[str, object]:
     Внутри адаптера source_id источника — это column_id корзины; имя входа в
     формуле (`name`) одинаково здесь и в опубликованном контракте.
     """
-    return {
+    contract = {
         "scoring": {
             "method": plan.method,
             "sources": [
@@ -144,8 +144,9 @@ def plan_contract(plan: MeasurementPlan) -> dict[str, object]:
             "majority_denominator": plan.majority_denominator,
         },
         "aggregation": {"method": plan.reducer},
-        "formula": plan.formula,
     }
+    contract["formula"] = plan.formula or contract_formula(contract)
+    return contract
 
 
 def _units_frame(records: list[dict[str, object]], values: dict[str, list[object]]) -> pd.DataFrame:
@@ -166,7 +167,7 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
     units = _units_frame(records, values)
     contract = plan_contract(plan)
     try:
-        formula = parse_formula(contract_formula(contract))
+        formula = parse_formula(contract["formula"])
         columns = formula_columns(units, contract)
         if plan.missing_policy == "fail":
             blank = [name for name in formula.inputs if columns[name].isna().any()]

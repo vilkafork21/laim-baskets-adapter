@@ -168,8 +168,13 @@
         "laim_basket/transform/values.py",
         "laim_basket/umr_schema.py",
         "laim_monitoring/__init__.py",
-        "laim_monitoring/core.py",
-        "laim_monitoring/formula.py"
+        "laim_monitoring/contract.py",
+        "laim_monitoring/drift.py",
+        "laim_monitoring/errors.py",
+        "laim_monitoring/formula.py",
+        "laim_monitoring/scoring.py",
+        "laim_monitoring/units.py",
+        "laim_monitoring/values.py"
       ],
       "functionName": "main",
       "functionParameters": [],

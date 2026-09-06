@@ -31,7 +31,8 @@ def test_reconciled_plan_yields_computed_contract():
     plan = make_plan("identity", [source("E", "final_score")], reported="0.75")
     contract = node._monitoring_metric(_result(frame, layout, plan))
     assert contract["status"] == "computed"
-    assert contract["contract_version"] == "laim-monitoring-metric.v2"
+    assert contract["contract_version"] == "laim-monitoring-metric.v2"  # готовый метод: старые ноды читают
+    assert contract["formula"] == "mean(source_1)"
     assert contract["scoring"]["method"] == "identity"
     assert contract["scoring"]["sources"][0]["column_name"] == "Итог_metric"
     assert contract["baseline"]["value"] == pytest.approx(0.75)
