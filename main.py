@@ -11,6 +11,8 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
+from laim_monitoring import contract_formula
+
 from laim_basket.config import llm_config
 from laim_basket.errors import BasketError, PackageError
 from laim_basket.llm.client import LlmClient
@@ -141,7 +143,7 @@ def _monitoring_metric(result: RunResult) -> dict[str, object]:
             "computed-план без воспроизведённого baseline",
             reconciliation=result.km["reconciliation"],
         )
-    return {
+    published = {
         **contract,
         "status": "computed",
         "basket_id": plan.basket_id,
@@ -153,6 +155,7 @@ def _monitoring_metric(result: RunResult) -> dict[str, object]:
             "sources": [
                 {
                     "source_id": f"source_{index}",
+                    "name": source["name"],
                     "column_name": result.umr.published_columns[source["column_id"]],
                     "role": source["role"],
                     # Метрики публикуются уже нормализованными числами (value_map
@@ -188,7 +191,11 @@ def _monitoring_metric(result: RunResult) -> dict[str, object]:
             "affects_monitoring": False,
         },
         "evidence": {key: list(value) for key, value in plan.evidence.items()},
+        "formula": plan.formula,
     }
+    # Формула всегда явная в контракте: для готовых методов — синтезированная.
+    published["formula"] = contract_formula(published)
+    return published
 
 
 def _parquet_safe(frame):

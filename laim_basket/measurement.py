@@ -9,6 +9,8 @@ from decimal import Decimal, InvalidOperation
 import jsonschema
 from openpyxl.utils import column_index_from_string
 
+from laim_monitoring import FormulaError, parse_formula
+
 from .contracts import MEASUREMENT_SCHEMA
 from .errors import MeasurementPlanError, NotEvaluableError
 from .models import MeasurementPlan, ResolvedLayout, RunContext
@@ -210,6 +212,7 @@ def _validate_source_contract(method: str, sources: list[dict[str, object]]) -> 
         "all_criteria": counts["criterion"] >= 2 and len(counts) == 1,
         "majority": counts["assessor_vote"] >= 2 and len(counts) == 1,
         "all_assessors": counts["assessor_vote"] >= 2 and len(counts) == 1,
+        "formula": True,  # состав входов задаёт сама формула
     }
     if not expected[method]:
         raise NotEvaluableError("Метод КМ несовместим с ролями источников", method=method, roles=dict(counts))
@@ -320,6 +323,33 @@ def _vertically_merged_source(
     )
 
 
+def _resolve_formula(
+    proposal: dict[str, object], method: str, sources: list[dict[str, object]], layout: ResolvedLayout
+) -> str | None:
+    """Формула из отчёта: обязательна при method=formula, запрещена иначе."""
+    text = proposal.get("formula")
+    if method != "formula":
+        if text is not None:
+            raise MeasurementPlanError("formula допустима только при score.method=formula")
+        return None
+    if not isinstance(text, str) or not text.strip():
+        raise MeasurementPlanError("score.method=formula требует непустую formula")
+    try:
+        parsed = parse_formula(text)
+    except FormulaError as exc:
+        raise MeasurementPlanError(f"Формула не принята: {exc}", formula=text) from exc
+    names = {source["name"] for source in sources}
+    unknown = [name for name in parsed.inputs if name not in names and name != "weight"]
+    if unknown:
+        raise MeasurementPlanError(
+            "Формула ссылается на входы, которых нет в score.sources",
+            unknown=unknown, declared=sorted(names),
+        )
+    if "weight" in parsed.inputs and layout.weight is None:
+        raise NotEvaluableError("Формула использует weight, а в корзине нет weight-колонки")
+    return parsed.text
+
+
 def resolve_measurement_plan(
     proposal: dict[str, object],
     context: RunContext,
@@ -347,7 +377,13 @@ def resolve_measurement_plan(
             raise MeasurementPlanError("Значимое поле плана осталось без evidence", field=field)
 
     score = proposal["score"]
-    method, sources = _canonicalize_score(score)
+    if score["method"] == "formula":
+        method, sources = "formula", [dict(source) for source in score["sources"]]
+    else:
+        method, sources = _canonicalize_score(score)
+    for index, source in enumerate(sources, start=1):
+        source.setdefault("name", f"source_{index}")
+    formula = _resolve_formula(proposal, method, sources, layout)
     column_ids = [source["column_id"] for source in sources]
     if len(column_ids) != len(set(column_ids)):
         raise NotEvaluableError("Одна физическая колонка повторена в MeasurementPlan")
@@ -554,6 +590,7 @@ def resolve_measurement_plan(
                 reported_value = canonical
 
     return MeasurementPlan(
+        formula=formula,
         basket_id=context.basket_id,
         metric_name=proposal["metric_name"],
         document_roles=dict(roles),

@@ -89,6 +89,7 @@ class MeasurementPlan:
     reported_raw: str | None
     reported_span_id: str | None
     evidence: dict[str, tuple[str, ...]]
+    formula: str | None = None
 
     @property
     def evaluation_unit(self) -> str:
@@ -114,6 +115,7 @@ class MeasurementPlan:
                 "missing_policy": self.missing_policy,
                 "majority_denominator": self.majority_denominator,
             },
+            "formula": self.formula,
             "reducer": {"method": self.reducer},
             "release": {
                 "threshold": str(self.threshold) if self.threshold is not None else None,

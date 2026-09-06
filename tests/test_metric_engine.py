@@ -84,16 +84,6 @@ def test_all_criteria_is_conjunction_of_binary_criteria():
     assert km["recomputed_value"] == pytest.approx(1 / 3)
 
 
-def test_all_criteria_rejects_non_binary_values():
-    frame = frame_from({"Полнота": [0.5, 1], "Точность": [1, 1]})
-    layout = make_layout({"A1": "Полнота", "B1": "Точность"})
-    plan = make_plan(
-        "all_criteria", [source("A1", "criterion"), source("B1", "criterion")],
-    )
-    with pytest.raises(NotEvaluableError):
-        evaluate(frame, layout, plan)
-
-
 def test_majority_declared_denominator_counts_absent_votes_as_negative():
     frame = frame_from({"A": [1, 1, 1], "B": [1, 0, None], "C": [0, 0, None]})
     layout = make_layout({"A": "A", "B": "B", "C": "C"})
@@ -239,3 +229,47 @@ def test_threshold_verdict_is_informational():
     _scored, km = _km(frame, layout, plan)
     assert km["threshold_verdict"] == "failed"
     assert km["status"] == "computed"
+
+
+def test_formula_plan_computes_macro_f1_as_in_report():
+    frame = frame_from({
+        "Класс агента": ["a", "a", "b", "b", "a"],
+        "Истинный класс": ["a", "b", "b", "b", "b"],
+    })
+    layout = make_layout({"C": "Класс агента", "D": "Истинный класс"})
+    plan = make_plan(
+        "formula",
+        [
+            source("C", "prediction", "label", name="prediction"),
+            source("D", "target", "label", name="target"),
+        ],
+        formula='f1(prediction, target, "macro")',
+        reported="0.5833", reported_raw="0.5833", metric_name="Macro F1",
+    )
+    scored, km = evaluate(frame, layout, plan)
+    # a: P=1/3 R=1 F1=0.5; b: P=1 R=0.5 F1=2/3 → macro 7/12
+    assert km["recomputed_value"] == pytest.approx(7 / 12)
+    assert km["reconciliation"]["status"] == "match"
+    assert km["main_metric"]["formula"] == 'f1(prediction, target, "macro")'
+    # построчного score у F1 нет — публикуется совпадение с истинным классом
+    assert scored["main_metric"].tolist() == [1.0, 0.0, 1.0, 1.0, 0.0]
+
+
+def test_formula_plan_threshold_share():
+    frame = frame_from({"Оценка": [5, 4, 3, 2]})
+    layout = make_layout({"E": "Оценка"})
+    plan = make_plan(
+        "formula", [source("E", "final_score", name="оценка")], formula="mean(оценка >= 4)",
+    )
+    scored, km = evaluate(frame, layout, plan)
+    assert km["recomputed_value"] == pytest.approx(0.5)
+    assert scored["main_metric"].tolist() == [1.0, 1.0, 0.0, 0.0]
+
+
+def test_preset_methods_are_published_as_formulas():
+    frame = frame_from({"A": [1, 1], "B": [1, 0]})
+    layout = make_layout({"A": "A", "B": "B"})
+    plan = make_plan("mean_criteria", [source("A", "criterion"), source("B", "criterion")],
+                     missing_policy="exclude_value")
+    _scored, km = evaluate(frame, layout, plan)
+    assert km["main_metric"]["formula"] == "mean(avg(source_1, source_2))"

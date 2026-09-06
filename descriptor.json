@@ -166,7 +166,10 @@
         "laim_basket/transform/identity.py",
         "laim_basket/transform/region.py",
         "laim_basket/transform/values.py",
-        "laim_basket/umr_schema.py"
+        "laim_basket/umr_schema.py",
+        "laim_monitoring/__init__.py",
+        "laim_monitoring/core.py",
+        "laim_monitoring/formula.py"
       ],
       "functionName": "main",
       "functionParameters": [],

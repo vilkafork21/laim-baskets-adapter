@@ -135,7 +135,20 @@ validation report публикует macro и weighted одновременно,
 Процитируй это указание и строку выбранного варианта в evidence.reducer, не цитируй
 конкурирующий вариант. Без такого указания верни reported_value_state=ambiguous.
 Если repair-ошибка содержит required_reducer или required_reported_value, исправь
-соответствующие поля и evidence ровно по указанным spans."""
+соответствующие поля и evidence ровно по указанным spans.
+Если метрика отчёта не сводится к готовому методу (precision, recall, F1,
+доля строк с оценкой не ниже порога, метрика по одному классу и т.п.), задай
+score.method=formula и запиши её в поле formula ровно так, как она определена в
+отчёте, над именами источников (score.sources[].name) и weight:
+операции + - * /, сравнения == != < <= > >=, and/or/not; агрегаты mean(x),
+wmean(x, weight), sum(x), count(x); построчные avg(a, b, ...), min(...), max(...),
+abs(x), fillna(x, число), majority(голоса..., declared=True|False); по классам
+precision(prediction, target, average), recall(...), f1(...), где average —
+"macro", "micro", "weighted" или метка класса. Примеры: mean(prediction == target);
+f1(prediction, target, "macro"); mean(оценка >= 4); mean(min(полнота, точность)).
+Пропуски агрегаты пропускают; если отчёт считает их нулём, напиши fillna явно.
+Формула обязана давать одно число в шкале release.scale и воспроизводить
+reported_value на корзине — это проверяется пересчётом."""
 
 
 def measurement_messages(

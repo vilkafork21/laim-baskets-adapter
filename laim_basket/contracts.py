@@ -116,6 +116,8 @@ _SOURCE = {
     "required": ["column_id", "role", "normalization", "polarity"],
     "properties": {
         "column_id": {"type": "string", "pattern": "^[A-Z]{1,3}$"},
+        # Имя входа в формуле (для method=formula); по умолчанию source_<n>.
+        "name": {"type": "string", "pattern": "^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]{0,40}$"},
         "role": {"enum": ["final_score", "criterion", "assessor_vote", "prediction", "target"]},
         "normalization": {
             "oneOf": [
@@ -138,13 +140,17 @@ MEASUREMENT_SCHEMA = {
     "additionalProperties": False,
     "required": [
         "plan_version", "basket_id", "metric_name", "document_roles",
-        "assessment_mode", "score", "reducer", "release",
+        "assessment_mode", "score", "formula", "reducer", "release",
         "reported_value_state", "reported_value", "evidence",
     ],
     "properties": {
         "plan_version": {"const": "laim-measurement-plan.v2"},
         "basket_id": {"type": "string", "minLength": 1},
         "metric_name": {"type": "string", "minLength": 1},
+        # Формула КМ как она определена в отчёте о валидации, над именами
+        # источников (score.sources[].name) и weight. Обязательна при
+        # score.method=formula; для готовых методов null.
+        "formula": {"type": ["string", "null"], "maxLength": 500},
         "document_roles": {
             "type": "object", "additionalProperties": False,
             "required": ["instruction", "development_report", "validation_report"],
@@ -160,7 +166,7 @@ MEASUREMENT_SCHEMA = {
             "properties": {
                 "method": {"enum": [
                     "identity", "accuracy", "mean_criteria", "all_criteria",
-                    "majority", "all_assessors",
+                    "majority", "all_assessors", "formula",
                 ]},
                 "sources": {"type": "array", "minItems": 1, "items": _SOURCE},
                 "missing_policy": {"enum": ["fail", "exclude_unit", "exclude_value", "zero"]},

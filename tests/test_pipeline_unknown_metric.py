@@ -1,10 +1,11 @@
-"""Сквозной прогон ноды: неизвестная метрика в отчёте → not_computable, не цвет.
+"""Сквозной прогон ноды на реальном run_package с подменённым LLM.
 
-Реальный run_package (xlsx + три docx, layout, план, движок, гейт), LLM
-подменён детерминированными ответами. Сценарий «новый агент»: отчёт о валидации
-называет F1 = 0.82, а единственная построчная колонка корзины даёт среднее 0.75.
-Ни один план реестра не воспроизводит 0.82 — нода обязана отказаться с кодом
-km_reconciliation_mismatch. Контрольный случай: отчёт называет 0.75 — computed.
+Три сценария «новый агент»:
+1. отчёт называет macro-F1 — модель записывает формулу как в отчёте, пересчёт
+   на корзине совпадает → computed, формула уходит в контракт;
+2. модель подобрала не ту формулу (среднее колонки вместо F1) — пересчёт не
+   совпадает с отчётом → not_computable с кодом km_reconciliation_mismatch;
+3. контроль: готовый метод, воспроизводящий число отчёта → computed.
 """
 
 from __future__ import annotations
@@ -35,9 +36,11 @@ def _write_package(root: Path, reported: str, scores: list[int]) -> Path:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Лист1"
-    sheet.append(["query_id", "input_query", "output_answer", "Итог"])
+    sheet.append(["query_id", "input_query", "Класс агента", "Истинный класс", "Итог"])
+    classes = [("a", "a"), ("a", "b"), ("b", "b"), ("b", "b"), ("a", "b")]
     for index, score in enumerate(scores, start=1):
-        sheet.append([f"q{index}", f"вопрос {index}", f"ответ {index}", score])
+        agent, truth = classes[(index - 1) % len(classes)]
+        sheet.append([f"q{index}", f"вопрос {index}", agent, truth, score])
     workbook.save(package / "test_set.xlsx")
     _write_docx(package / "assessor_instruction.docx", [
         "Инструкция ассессора: каждая пара запрос-ответ оценивается независимо.",
@@ -49,7 +52,7 @@ def _write_package(root: Path, reported: str, scores: list[int]) -> Path:
     ])
     _write_docx(package / "validation_report.docx", [
         "Отчёт о валидации агента.",
-        "Ключевая метрика: F1 на тестовой корзине.",
+        "Ключевая метрика: macro-F1 по классам на тестовой корзине.",
         f"Значение метрики: {reported}",
     ])
     return package
@@ -63,7 +66,7 @@ LAYOUT = {
     "header_rows": [1],
     "roles": {
         "input_query": {"column": "B", "header": "input_query"},
-        "output_answer": {"column": "C", "header": "output_answer"},
+        "output_answer": {"column": "C", "header": "Класс агента"},
         "query_id": {"column": "A", "header": "query_id"},
         "scenario": None,
         "assessor_id": None,
@@ -75,7 +78,25 @@ LAYOUT = {
 }
 
 
-def _measurement(reported: str) -> dict:
+def _measurement(reported: str, formula: str | None = None) -> dict:
+    if formula:
+        return {
+            **_measurement(reported),
+            "metric_name": "Macro F1",
+            "score": {
+                "method": "formula",
+                "sources": [
+                    {"column_id": "C", "name": "prediction", "role": "prediction",
+                     "normalization": "label", "polarity": "direct"},
+                    {"column_id": "D", "name": "target", "role": "target",
+                     "normalization": "label", "polarity": "direct"},
+                ],
+                "missing_policy": "fail",
+                "majority_denominator": None,
+            },
+            "formula": formula,
+            "release": {"threshold": None, "comparator": None, "scale": "ratio", "precision": 4},
+        }
     return {
         "plan_version": "laim-measurement-plan.v2",
         "basket_id": BASKET_ID,
@@ -89,12 +110,13 @@ def _measurement(reported: str) -> dict:
         "score": {
             "method": "identity",
             "sources": [{
-                "column_id": "D", "role": "final_score",
+                "column_id": "E", "role": "final_score",
                 "normalization": "numeric", "polarity": "direct",
             }],
             "missing_policy": "fail",
             "majority_denominator": None,
         },
+        "formula": None,
         "reducer": {"method": "mean"},
         "release": {"threshold": None, "comparator": None, "scale": "ratio", "precision": 2},
         "reported_value_state": "unambiguous",
@@ -115,44 +137,61 @@ def _measurement(reported: str) -> dict:
 class ScriptedLlm:
     """Возвращает один и тот же layout и план: модели больше нечего предложить."""
 
-    def __init__(self, reported: str):
+    def __init__(self, reported: str, formula: str | None = None):
         self.reported = reported
+        self.formula = formula
         self.calls: list[str] = []
 
     def chat(self, messages: list[dict], label: str) -> str:
         self.calls.append(label)
-        proposal = LAYOUT if label.startswith("layout") else _measurement(self.reported)
+        proposal = LAYOUT if label.startswith("layout") else _measurement(self.reported, self.formula)
         return json.dumps(proposal, ensure_ascii=False)
 
 
-def _run(tmp_path: Path, reported: str, scores: list[int]):
+def _run(tmp_path: Path, reported: str, scores: list[int], formula: str | None = None):
     package = _write_package(tmp_path, reported, scores)
-    client = ScriptedLlm(reported)
+    client = ScriptedLlm(reported, formula)
     result = run_package(package, tmp_path / "out", client=client)
     return result, client
 
 
-def test_metric_outside_registry_is_refused_with_reason(tmp_path):
-    result, client = _run(tmp_path, reported="0.82", scores=[1, 1, 1, 0])
+def test_report_metric_is_written_as_formula_and_reproduced(tmp_path):
+    # классы (агент, истина) × 5: a/a, a/b, b/b, b/b, a/b → macro-F1 = 7/12 ≈ 0.5833
+    result, client = _run(
+        tmp_path, reported="0.5833", scores=[1, 0, 1, 1, 0], formula='f1(prediction, target, "macro")',
+    )
+    assert result.status == "computed"
+    assert result.km["reconciliation"]["status"] == "match"
+    assert sum(label.startswith("measurement") for label in client.calls) == 1
+
+    contract = node._monitoring_metric(result)
+    assert contract["status"] == "computed"
+    assert contract["formula"] == 'f1(prediction, target, "macro")'
+    assert contract["scoring"]["method"] == "formula"
+    assert [s["name"] for s in contract["scoring"]["sources"]] == ["prediction", "target"]
+    assert contract["baseline"]["value"] == pytest.approx(0.5833)
+    assert contract["baseline"]["recomputed_value"] == pytest.approx(7 / 12)
+
+
+def test_wrong_formula_does_not_reproduce_report_and_is_refused(tmp_path):
+    # модель взяла среднее колонки Итог (0.6) вместо macro-F1 из отчёта (0.5833)
+    result, client = _run(tmp_path, reported="0.5833", scores=[1, 0, 1, 1, 0])
     assert result.status == "not_evaluable"
     assert result.km["reason_code"] == "km_reconciliation_mismatch"
-    assert result.km["details"]["metric_name"] == "F1"
-    assert result.km["details"]["recomputed_value"] == pytest.approx(0.75)
-    # модель получила repair-попытки и всё равно не смогла воспроизвести отчёт
+    assert result.km["details"]["recomputed_value"] == pytest.approx(0.6)
     assert sum(label.startswith("measurement") for label in client.calls) == 5
 
     contract = node._monitoring_metric(result)
     assert contract["status"] == "not_computable"
     assert contract["reason_code"] == "km_reconciliation_mismatch"
-    assert "baseline" not in contract or contract["baseline"].get("value") is None
 
 
-def test_reproduced_report_value_is_published(tmp_path):
+def test_preset_method_reproducing_report_is_published(tmp_path):
     result, _client = _run(tmp_path, reported="0.75", scores=[1, 1, 1, 0])
     assert result.status == "computed"
-    assert result.km["reconciliation"]["status"] == "match"
     contract = node._monitoring_metric(result)
     assert contract["status"] == "computed"
+    assert contract["formula"] == "mean(source_1)"
     assert contract["baseline"]["value"] == pytest.approx(0.75)
     assert contract["baseline"]["reconciliation"] == "match"
     assert contract["scoring"]["sources"][0]["column_name"] == "итог_metric"

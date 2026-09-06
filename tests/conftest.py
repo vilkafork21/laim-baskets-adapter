@@ -54,8 +54,14 @@ def make_plan(
     threshold: str | None = None,
     comparator: str | None = None,
     metric_name: str = "Accuracy",
+    formula: str | None = None,
 ) -> MeasurementPlan:
+    sources = [
+        {**source, "name": source.get("name") or f"source_{index}"}
+        for index, source in enumerate(sources, start=1)
+    ]
     return MeasurementPlan(
+        formula=formula,
         basket_id="CI00000001",
         metric_name=metric_name,
         document_roles={
@@ -89,13 +95,16 @@ def make_plan(
     )
 
 
-def source(column_id: str, role: str, normalization="numeric", polarity: str = "direct") -> dict:
-    return {
+def source(column_id: str, role: str, normalization="numeric", polarity: str = "direct", name: str | None = None) -> dict:
+    result = {
         "column_id": column_id,
         "role": role,
         "normalization": normalization,
         "polarity": polarity,
     }
+    if name:
+        result["name"] = name
+    return result
 
 
 def frame_from(columns: dict[str, list], weights: list | None = None) -> pd.DataFrame:

@@ -1,8 +1,25 @@
-"""Чистый Decimal-вычислитель по валидированному MeasurementPlan."""
+"""Расчёт КМ по MeasurementPlan.
+
+Ячейки корзины нормализуются (value_map, инверсия, проценты), строки
+собираются в единицы оценки (реплика или диалог), а само значение считает
+общий вычислитель laim_monitoring — та же формула, которой km-dynamic считает
+КМ на мониторинге. Поэтому baseline и мониторинг сопоставимы по построению.
+"""
 
 from __future__ import annotations
 
 from decimal import Decimal
+
+import pandas as pd
+
+from laim_monitoring import (
+    FormulaError,
+    MonitoringContractError,
+    contract_formula,
+    formula_columns,
+    parse_formula,
+    unit_scores,
+)
 
 from ..errors import NotEvaluableError
 from ..measurement import decimal_value, reported_quantum
@@ -103,68 +120,40 @@ def _unit_records(frame, values: dict[str, list[object]], plan: MeasurementPlan)
     return records
 
 
-def _missing_score(plan: MeasurementPlan, reason: str) -> Decimal | None:
-    if plan.missing_policy == "fail":
-        raise NotEvaluableError(reason)
-    if plan.missing_policy in {"exclude_unit", "exclude_value"}:
-        return None
-    return Decimal(0)
+def plan_contract(plan: MeasurementPlan) -> dict[str, object]:
+    """Часть контракта monitoring_metric, нужная формуле: источники и её текст.
+
+    Внутри адаптера source_id источника — это column_id корзины; имя входа в
+    формуле (`name`) одинаково здесь и в опубликованном контракте.
+    """
+    return {
+        "scoring": {
+            "method": plan.method,
+            "sources": [
+                {
+                    "source_id": source["column_id"],
+                    "column_name": source["column_id"],
+                    "name": source["name"],
+                    "role": source["role"],
+                    "normalization": "label" if source["role"] in ("prediction", "target") else "numeric",
+                    "polarity": "direct",
+                }
+                for source in plan.sources
+            ],
+            "missing_policy": plan.missing_policy,
+            "majority_denominator": plan.majority_denominator,
+        },
+        "aggregation": {"method": plan.reducer},
+        "formula": plan.formula,
+    }
 
 
-def _present_values(
-    values: list[object], plan: MeasurementPlan, reason: str
-) -> list[Decimal] | None:
-    """Применить missing_policy к значениям единицы: None — единица не оценивается."""
-    if plan.missing_policy == "exclude_value":
-        values = [value for value in values if value is not None]
-        return values or None
-    if any(value is None for value in values):
-        replacement = _missing_score(plan, reason)
-        if replacement is None:
-            return None
-        values = [replacement if value is None else value for value in values]
-    return values
-
-
-def _min_binary(values: list[Decimal], method: str) -> Decimal:
-    if any(value not in (Decimal(0), Decimal(1)) for value in values):
-        raise NotEvaluableError(f"{method} принимает только нормализованные 0/1")
-    return min(values)
-
-
-def _score(record: dict[str, object], plan: MeasurementPlan) -> Decimal | None:
-    by_role: dict[str, list[object]] = {}
-    for source in plan.sources:
-        by_role.setdefault(source["role"], []).append(record["values"][source["column_id"]])
-    if plan.method == "identity":
-        value = by_role["final_score"][0]
-        return _missing_score(plan, "Отсутствует final score") if value is None else value
-    if plan.method == "accuracy":
-        prediction, target = by_role["prediction"][0], by_role["target"][0]
-        if prediction is None or target is None:
-            return _missing_score(plan, "Отсутствует prediction или target")
-        return Decimal(int(prediction == target))
-    if plan.method in ("mean_criteria", "all_criteria"):
-        values = _present_values(by_role["criterion"], plan, "Отсутствует criterion score")
-        if values is None:
-            return None
-        if plan.method == "mean_criteria":
-            return sum(values, Decimal(0)) / len(values)
-        return _min_binary(values, "all_criteria")
-    votes = by_role["assessor_vote"]
-    if plan.method == "all_assessors":
-        values = _present_values(votes, plan, "Отсутствует голос assessor")
-        return None if values is None else _min_binary(values, "all_assessors")
-    present = [vote for vote in votes if vote is not None]
-    if any(vote not in (Decimal(0), Decimal(1)) for vote in present):
-        raise NotEvaluableError("majority принимает только бинарные голоса")
-    if not present:
-        return _missing_score(plan, "Нет голосов assessor")
-    denominator = len(votes) if plan.majority_denominator == "declared" else len(present)
-    positives = sum(present, Decimal(0))
-    if positives * 2 == denominator:
-        return _missing_score(plan, "Majority завершился ничьей")
-    return Decimal(int(positives * 2 > denominator))
+def _units_frame(records: list[dict[str, object]], values: dict[str, list[object]]) -> pd.DataFrame:
+    units = pd.DataFrame({
+        column_id: [record["values"][column_id] for record in records] for column_id in values
+    })
+    units["input_query_count"] = [float(record["weight"]) for record in records]
+    return units
 
 
 def _published_scale(value: Decimal, scale: str) -> Decimal:
@@ -174,18 +163,33 @@ def _published_scale(value: Decimal, scale: str) -> Decimal:
 def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[object, dict[str, object]]:
     values = source_values(frame, layout, plan)
     records = _unit_records(frame, values, plan)
-    scores = [_score(record, plan) for record in records]
-    scored = [(record, score) for record, score in zip(records, scores) if score is not None]
-    if not scored:
+    units = _units_frame(records, values)
+    contract = plan_contract(plan)
+    try:
+        formula = parse_formula(contract_formula(contract))
+        columns = formula_columns(units, contract)
+        if plan.missing_policy == "fail":
+            blank = [name for name in formula.inputs if columns[name].isna().any()]
+            if blank:
+                raise NotEvaluableError("В источниках КМ есть пропуски, а missing_policy=fail", inputs=blank)
+        scores = unit_scores(units, contract)
+        value = formula.evaluate(columns)
+    except (FormulaError, MonitoringContractError) as exc:
+        raise NotEvaluableError(f"Формула КМ: {exc}") from exc
+    if pd.isna(value):
+        raise NotEvaluableError("Ни одной оцененной единицы")
+    scored_mask = (
+        scores.notna() if formula.unit_expression() is not None
+        else pd.concat([columns[name] for name in formula.inputs], axis=1).notna().all(axis=1)
+    )
+    if not scored_mask.any():
         raise NotEvaluableError("Ни одной оцененной единицы")
     weighted = plan.reducer == "frequency_weighted_mean"
-    weights = [record["weight"] if weighted else Decimal(1) for record, _score_value in scored]
-    if any(weight <= 0 for weight in weights):
+    weights = units["input_query_count"] if weighted else pd.Series(1.0, index=units.index)
+    if weighted and (weights[scored_mask] <= 0).any():
         raise NotEvaluableError("Вес должен быть положительным")
-    total_weight = sum(weights, Decimal(0))
-    recomputed = sum(
-        score * weight for (_record, score), weight in zip(scored, weights)
-    ) / total_weight
+    total_weight = Decimal(str(float(weights[scored_mask].sum())))
+    recomputed = Decimal(str(value))
     published_recomputed = _published_scale(recomputed, plan.scale)
     final_value = plan.reported_value if plan.reported_value is not None else published_recomputed
     source = "validation_report" if plan.reported_value is not None else "recomputed"
@@ -208,15 +212,16 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
 
     scored_frame = frame.copy()
     per_row: list[float | None] = [None] * len(frame)
-    for record, score in zip(records, scores):
-        if score is not None:
+    for record, score in zip(records, scores.tolist()):
+        if not pd.isna(score):
             for row in record["rows"]:
                 per_row[row] = float(score)
     scored_frame["main_metric"] = per_row
+    scored_units = int(scored_mask.sum())
     coverage = {
         "total_units": len(records),
-        "scored_units": len(scored),
-        "excluded_units": len(records) - len(scored),
+        "scored_units": scored_units,
+        "excluded_units": len(records) - scored_units,
         "weight_sum": float(total_weight),
     }
     km = {
@@ -236,10 +241,11 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
             "value": float(final_value),
             "recomputed_value": float(published_recomputed),
             "value_source": source,
-            "n_units": len(scored),
-            "units_dropped_nan_score": len(records) - len(scored),
+            "n_units": scored_units,
+            "units_dropped_nan_score": len(records) - scored_units,
             "evaluation_unit": plan.evaluation_unit,
             "scoring_method": plan.method,
+            "formula": formula.text,
             "aggregation": plan.reducer,
             "weighted": weighted,
             "missing_policy": plan.missing_policy,
