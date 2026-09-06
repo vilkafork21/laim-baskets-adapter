@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from conftest import frame_from, make_layout, make_plan, source
+from laim_basket.errors import PackageError
 from laim_basket.metric.engine import evaluate
 from laim_basket.models import RunResult
 from laim_basket.publish import PublishedUmr
@@ -40,15 +41,12 @@ def test_reconciled_plan_yields_computed_contract():
 
 
 def test_mismatched_plan_never_leaves_node_as_computed():
+    """Гейт не пропускает mismatch; если бы пропустил — нода падает, не публикует."""
     frame = frame_from({"Итог": [1, 0, 0, 0]})
     layout = make_layout({"E": "Итог"})
     plan = make_plan("identity", [source("E", "final_score")], reported="0.82")
-    contract = node._monitoring_metric(_result(frame, layout, plan))
-    assert contract["status"] == "not_computable"
-    assert contract["reason_code"] == "km_reconciliation_mismatch"
-    assert contract["baseline"]["value"] is None
-    assert contract["baseline"]["reported_value"] == pytest.approx(0.82)
-    assert contract["baseline"]["recomputed_value"] == pytest.approx(0.25)
+    with pytest.raises(PackageError):
+        node._monitoring_metric(_result(frame, layout, plan))
 
 
 def test_missing_official_baseline_is_not_computable():
