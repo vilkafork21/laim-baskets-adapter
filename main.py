@@ -97,7 +97,6 @@ def _monitoring_metric(result: RunResult) -> dict[str, object]:
     # Совместимость с нодами на старом пакете: готовые методы уходят как v2
     # (формула — дополнительное поле, старые ноды его не читают), явная
     # формула требует v3 и обновлённых потребителей.
-    plan = result.measurement_plan
     version = (
         laim_monitoring.VERSION if plan is not None and plan.method == "formula"
         else "laim-monitoring-metric.v2"
