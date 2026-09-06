@@ -15,15 +15,11 @@ from dataclasses import dataclass
 import pandas as pd
 
 from .errors import NotEvaluableError
-from .metric.engine import source_values
 from .models import MeasurementPlan, ResolvedLayout
 from .transform.values import blank, slug
 
 FLAT_SHEET = "Вариант для отд. запросов"
 DIALOGUE_SHEET = "Вариант для диалога"
-
-_METRIC_ROLES = {"final_score", "criterion", "assessor_vote"}
-_LABEL_ROLES = {"prediction": "output_answer", "target": "reference_answer"}
 # Колонки спецификации с фиксированным местом; остальные (reference_answer,
 # [module]_*, *_metric) идут между ними в физическом порядке колонок корзины.
 _HEAD = (
@@ -103,34 +99,25 @@ def _role_names(layout: ResolvedLayout) -> dict[str, str]:
 
 
 def published_names(layout: ResolvedLayout, plan: MeasurementPlan | None) -> list[tuple[str, str]]:
-    """Пары (column_id, каноническое имя) для всех публикуемых колонок.
+    """Пары (column_id, опубликованное имя) для всех публикуемых колонок.
 
-    Одна физическая колонка может дать две: роль layout и источник КМ. Источники
-    score/criterion/vote получают `<slug>_metric`, prediction/target —
-    `[module]_output_answer`/`[module]_reference_answer` — собственное имя нужно
-    даже на колонке ответа, потому что в monitoring-ветке предсказание приходит
-    отдельным полем (route_label из трейса), а `output_answer` несёт текст ответа.
+    Входы формулы получают собственные имена даже на колонке ответа: разметка
+    судьи (`judged`) — `<slug>_metric`, наблюдаемый ответ агента —
+    `<slug>_output_answer`, потому что на мониторинге он приходит отдельным
+    полем из трейса, а `output_answer` несёт текст ответа.
     """
     roles = _role_names(layout)
     result = list(roles.items())
     if plan is None:
         return result
     published = set(roles.values())
-    for source in plan.sources:
-        column_id, role = source["column_id"], source["role"]
-        header = _header(layout, column_id)
-        if role in _LABEL_ROLES:
-            name = f"{slug(header)}_{_LABEL_ROLES[role]}"
-        elif column_id in roles:
-            raise NotEvaluableError(
-                "Источник КМ занят канонической ролью и не может быть метрикой",
-                column_id=column_id, role=role, canonical_role=roles[column_id],
-            )
-        else:
-            name = metric_slug(header)
+    for item in plan.inputs:
+        column_id = item["column_id"]
+        suffix = "metric" if item["judged"] else "output_answer"
+        name = f"{slug(_header(layout, column_id))}_{suffix}"
         if name in published or name == "main_metric":
             raise NotEvaluableError(
-                "Имя колонки источника КМ конфликтует с другой опубликованной колонкой",
+                "Имя колонки входа формулы конфликтует с другой опубликованной колонкой",
                 column_id=column_id, column_name=name,
             )
         published.add(name)
@@ -138,22 +125,15 @@ def published_names(layout: ResolvedLayout, plan: MeasurementPlan | None) -> lis
     return result
 
 
-def _source_columns(
+def _input_columns(
     frame: pd.DataFrame, layout: ResolvedLayout, plan: MeasurementPlan, names: dict[str, str]
 ) -> dict[str, list[object]]:
-    """Колонки источников КМ: метрики — нормализованными числами, module-level
-    prediction/target — как есть (роли layout уже присутствуют в frame)."""
-    metrics = source_values(frame, layout, plan)
-    result: dict[str, list[object]] = {}
-    for source in plan.sources:
-        name = names[source["column_id"]]
-        if source["role"] in _METRIC_ROLES:
-            result[name] = [
-                None if value is None else float(value) for value in metrics[source["column_id"]]
-            ]
-        elif name not in frame:
-            result[name] = frame[layout.column_names[source["column_id"]]].tolist()
-    return result
+    """Входы формулы как есть (сырые значения листа); роли layout уже в frame."""
+    return {
+        names[item["column_id"]]: frame[layout.column_names[item["column_id"]]].tolist()
+        for item in plan.inputs
+        if names[item["column_id"]] not in frame
+    }
 
 
 def _session_values(frame: pd.DataFrame, layout: ResolvedLayout) -> list[object]:
@@ -249,12 +229,12 @@ def _dialogue(
 def publish_umr(frame: pd.DataFrame, layout: ResolvedLayout, plan: MeasurementPlan | None) -> PublishedUmr:
     """Спроецировать внутренний канон (с сырыми колонками) в лист спецификации."""
     names = published_names(layout, plan)
-    # Источник КМ добавляется после роли того же column_id, поэтому в карте
-    # контракта побеждает имя источника — его и называет monitoring_metric.
+    # Вход формулы добавляется после роли того же column_id, поэтому в карте
+    # контракта побеждает имя входа — его и называет monitoring_metric.
     contract = dict(names)
     source = frame.copy()
     if plan is not None:
-        for name, values in _source_columns(frame, layout, plan, contract).items():
+        for name, values in _input_columns(frame, layout, plan, contract).items():
             source[name] = values
     dropped: list[str] = []
     if plan is not None and plan.assessment_mode == "dialogue":

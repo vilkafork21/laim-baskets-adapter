@@ -20,9 +20,6 @@ def _drift_frame(frame: pd.DataFrame, contract: dict, *, require_target: bool) -
         units["main_metric"] if "main_metric" in units else pd.Series([None] * len(units)),
         errors="coerce",
     )
-    missing_policy = contract.get("scoring", {}).get("missing_policy", "fail")
-    if require_target and missing_policy == "fail" and target.isna().any():
-        raise MonitoringContractError("Для drift обнаружен пустой main_metric")
     mode = contract["assessment_mode"]
     if mode == "dialogue":
         questions = [

@@ -5,7 +5,7 @@
    на корзине совпадает → computed, формула уходит в контракт;
 2. модель подобрала не ту формулу (среднее колонки вместо F1) — пересчёт не
    совпадает с отчётом → not_computable с кодом km_reconciliation_mismatch;
-3. контроль: готовый метод, воспроизводящий число отчёта → computed.
+3. контроль: простое среднее колонки, воспроизводящее число отчёта → computed.
 """
 
 from __future__ import annotations
@@ -79,59 +79,36 @@ LAYOUT = {
 
 
 def _measurement(reported: str, formula: str | None = None) -> dict:
-    if formula:
-        return {
-            **_measurement(reported),
-            "metric_name": "Macro F1",
-            "score": {
-                "method": "formula",
-                "sources": [
-                    {"column_id": "C", "name": "prediction", "role": "prediction",
-                     "normalization": "label", "polarity": "direct"},
-                    {"column_id": "D", "name": "target", "role": "target",
-                     "normalization": "label", "polarity": "direct"},
-                ],
-                "missing_policy": "fail",
-                "majority_denominator": None,
-            },
-            "formula": formula,
-            "release": {"threshold": None, "comparator": None, "scale": "ratio", "precision": 4},
-        }
-    return {
-        "plan_version": "laim-measurement-plan.v2",
+    """План модели: по умолчанию среднее колонки Итог; иначе явная формула по классам."""
+    plan = {
+        "plan_version": "laim-measurement-plan.v3",
         "basket_id": BASKET_ID,
-        "metric_name": "F1",
-        "document_roles": {
-            "instruction": "doc-1",
-            "development_report": "doc-2",
-            "validation_report": "doc-3",
-        },
+        "metric_name": "Доля верных",
+        "document_roles": {"instruction": "doc-1", "development_report": "doc-2", "validation_report": "doc-3"},
         "assessment_mode": "qa",
-        "score": {
-            "method": "identity",
-            "sources": [{
-                "column_id": "E", "role": "final_score",
-                "normalization": "numeric", "polarity": "direct",
-            }],
-            "missing_policy": "fail",
-            "majority_denominator": None,
-        },
-        "formula": None,
-        "reducer": {"method": "mean"},
-        "release": {"threshold": None, "comparator": None, "scale": "ratio", "precision": 2},
+        "formula": "mean(итог)",
+        "inputs": [{"column_id": "E", "name": "итог", "judged": True}],
+        "release": {"threshold": None, "comparator": None, "scale": "ratio", "precision": 4},
         "reported_value_state": "unambiguous",
         "reported_value": {"value": reported, "raw": reported, "span_id": "doc-3:p0003"},
         "evidence": {
             "metric": ["doc-3:p0002"],
-            "score": ["doc-1:p0002"],
+            "formula": ["doc-1:p0002"],
             "assessment_mode": ["doc-1:p0001"],
-            "missing_policy": [],
-            "denominator": [],
-            "reducer": ["doc-3:p0002"],
             "release": [],
             "reported_value": ["doc-3:p0003"],
         },
     }
+    if formula:
+        plan.update(
+            metric_name="Macro F1",
+            formula=formula,
+            inputs=[
+                {"column_id": "C", "name": "prediction", "judged": False},
+                {"column_id": "D", "name": "target", "judged": True},
+            ],
+        )
+    return plan
 
 
 class ScriptedLlm:
@@ -167,9 +144,10 @@ def test_report_metric_is_written_as_formula_and_reproduced(tmp_path):
     contract = node._monitoring_metric(result)
     assert contract["status"] == "computed"
     assert contract["formula"] == 'f1(prediction, target, "macro")'
-    assert contract["contract_version"] == "laim-monitoring-metric.v3"  # явная формула: нужны обновлённые ноды
-    assert contract["scoring"]["method"] == "formula"
-    assert [s["name"] for s in contract["scoring"]["sources"]] == ["prediction", "target"]
+    assert contract["inputs"] == [
+        {"name": "prediction", "column": "класс_агента_output_answer", "judged": False},
+        {"name": "target", "column": "истинный_класс_metric", "judged": True},
+    ]
     assert contract["baseline"]["value"] == pytest.approx(0.5833)
     assert contract["baseline"]["recomputed_value"] == pytest.approx(7 / 12)
 
@@ -187,12 +165,12 @@ def test_wrong_formula_does_not_reproduce_report_and_is_refused(tmp_path):
     assert contract["reason_code"] == "km_reconciliation_mismatch"
 
 
-def test_preset_method_reproducing_report_is_published(tmp_path):
+def test_mean_formula_reproducing_report_is_published(tmp_path):
     result, _client = _run(tmp_path, reported="0.75", scores=[1, 1, 1, 0])
     assert result.status == "computed"
     contract = node._monitoring_metric(result)
     assert contract["status"] == "computed"
-    assert contract["formula"] == "mean(source_1)"
+    assert contract["formula"] == "mean(итог)"
+    assert contract["inputs"] == [{"name": "итог", "column": "итог_metric", "judged": True}]
     assert contract["baseline"]["value"] == pytest.approx(0.75)
     assert contract["baseline"]["reconciliation"] == "match"
-    assert contract["scoring"]["sources"][0]["column_name"] == "итог_metric"

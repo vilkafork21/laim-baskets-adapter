@@ -72,15 +72,14 @@ class ResolvedLayout:
 
 @dataclass(frozen=True)
 class MeasurementPlan:
+    """Как считать КМ по корзине: формула, входы, единица оценки, значение отчёта."""
+
     basket_id: str
     metric_name: str
     document_roles: dict[str, str]
     assessment_mode: str
-    method: str
-    sources: tuple[dict[str, object], ...]
-    missing_policy: str
-    majority_denominator: str | None
-    reducer: str
+    formula: str
+    inputs: tuple[dict[str, object], ...]   # {column_id, name, judged}
     threshold: Decimal | None
     comparator: str | None
     scale: str
@@ -89,7 +88,6 @@ class MeasurementPlan:
     reported_raw: str | None
     reported_span_id: str | None
     evidence: dict[str, tuple[str, ...]]
-    formula: str | None = None
 
     @property
     def evaluation_unit(self) -> str:
@@ -104,19 +102,13 @@ class MeasurementPlan:
                 "span_id": self.reported_span_id,
             }
         return {
-            "plan_version": "laim-measurement-plan.v2",
+            "plan_version": "laim-measurement-plan.v3",
             "basket_id": self.basket_id,
             "metric_name": self.metric_name,
             "document_roles": self.document_roles,
             "assessment_mode": self.assessment_mode,
-            "score": {
-                "method": self.method,
-                "sources": list(self.sources),
-                "missing_policy": self.missing_policy,
-                "majority_denominator": self.majority_denominator,
-            },
             "formula": self.formula,
-            "reducer": {"method": self.reducer},
+            "inputs": list(self.inputs),
             "release": {
                 "threshold": str(self.threshold) if self.threshold is not None else None,
                 "comparator": self.comparator,

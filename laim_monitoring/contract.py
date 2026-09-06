@@ -1,11 +1,31 @@
-"""Контракт monitoring_metric: версии, валидация и формула КМ.
+"""Контракт КМ — содержимое порта `monitoring_metric`.
 
-Версии контракта:
-  v1 — без assessment_mode (только qa), поднимается автоматически;
-  v2 — готовый метод score (identity, accuracy, mean_criteria, all_criteria,
-       majority, all_assessors); формула синтезируется из метода;
-  v3 — формула записана явно (`formula`), method может быть "formula".
-Нода принимает все три версии и работает с v3; отдаёт только v3.
+Одна форма, одна версия. Контракт отвечает на четыре вопроса:
+
+* **какая формула** — `formula`, как метрика определена в отчёте о валидации;
+* **над чем** — `inputs`: имя в формуле, колонка UMR и размечает ли её судья
+  (`judged`); вход с `judged=false` — наблюдаемый ответ агента из трейса;
+* **что считается единицей** — `assessment_mode`: реплика, реплика с историей
+  или диалог;
+* **с чем сравнивать** — `baseline`: значение из отчёта, воспроизведённое
+  пересчётом на эталонной корзине (`reconciliation` = match, иначе контракт
+  не принимается).
+
+Пример:
+
+    {
+      "contract_version": "laim-monitoring-metric.v3",
+      "status": "computed",
+      "basket_id": "CI09997438",
+      "metric_name": "Accuracy",
+      "assessment_mode": "qa",
+      "formula": "mean(prediction == target)",
+      "inputs": [
+        {"name": "prediction", "column": "класс_output_answer", "judged": false},
+        {"name": "target",     "column": "класс_metric",        "judged": true}
+      ],
+      "baseline": {"value": 0.9387, "recomputed_value": 0.93871, "reconciliation": "match"}
+    }
 """
 
 from __future__ import annotations
@@ -17,22 +37,9 @@ from .errors import MonitoringContractError
 from .values import to_decimal
 
 VERSION = "laim-monitoring-metric.v3"
-ACCEPTED_VERSIONS = ("laim-monitoring-metric.v1", "laim-monitoring-metric.v2", VERSION)
-UMR_VERSION = "laim-umr.v2"
 ASSESSMENT_MODES = {"qa", "turn_with_history", "dialogue"}
-ROLES = {"final_score", "criterion", "assessor_vote", "prediction", "target"}
-MISSING = {"fail", "exclude_unit", "exclude_value", "zero"}
-WEIGHT = "weight"
-# Готовые методы v2 и допустимое число источников каждой роли.
-METHOD_ROLES = {
-    "identity": {"final_score": (1, 1)},
-    "accuracy": {"prediction": (1, 1), "target": (1, 1)},
-    "mean_criteria": {"criterion": (1, None)},
-    "all_criteria": {"criterion": (1, None)},
-    "majority": {"assessor_vote": (1, None)},
-    "all_assessors": {"assessor_vote": (2, None)},
-}
-JUDGE_SCORE_SOURCE_ID = "assessment_score"
+WEIGHT = "weight"                  # зарезервированное имя: input_query_count единицы
+JUDGE_SCORE_INPUT = "assessment_score"
 
 
 def require(mapping: dict, name: str, expected=None):
@@ -44,79 +51,16 @@ def require(mapping: dict, name: str, expected=None):
     return value
 
 
-def source_name(source: dict) -> str:
-    """Имя входа в формуле: явный name либо source_id."""
-    return str(source.get("name") or source["source_id"])
-
-
-def contract_formula(contract: dict) -> str:
-    """Текст формулы КМ: явный `formula`, иначе синтез из готового метода v2."""
-    explicit = contract.get("formula")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-    scoring = contract["scoring"]
-    method = scoring["method"]
-    if method == "formula":
-        raise MonitoringContractError("method=formula требует текст formula")
-    by_role: dict[str, list[str]] = {}
-    for source in scoring["sources"]:
-        by_role.setdefault(source["role"], []).append(source_name(source))
-    policy = scoring.get("missing_policy", "fail")
-
-    def rows(names: list[str]) -> list[str]:
-        return [f"fillna({name}, 0)" if policy == "zero" else name for name in names]
-
-    if method == "identity":
-        unit = rows(by_role["final_score"])[0]
-    elif method == "accuracy":
-        unit = f"{by_role['prediction'][0]} == {by_role['target'][0]}"
-    elif method == "mean_criteria":
-        names = rows(by_role["criterion"])
-        unit = (
-            f"avg({', '.join(names)})" if policy == "exclude_value" and len(names) > 1
-            else f"({' + '.join(names)}) / {len(names)}" if len(names) > 1
-            else names[0]
-        )
-    elif method in ("all_criteria", "all_assessors"):
-        names = rows(by_role["criterion" if method == "all_criteria" else "assessor_vote"])
-        unit = f"min({', '.join(names)})" if len(names) > 1 else names[0]
-    else:  # majority
-        declared = scoring.get("majority_denominator") == "declared"
-        unit = f"majority({', '.join(by_role['assessor_vote'])}{', declared=True' if declared else ''})"
-    weighted = contract.get("aggregation", {}).get("method") == "frequency_weighted_mean"
-    return f"wmean({unit}, {WEIGHT})" if weighted else f"mean({unit})"
-
-
-def _upgrade_contract(payload: dict) -> dict:
-    """Любая принятая версия → v3 с явной формулой."""
-    version = payload.get("contract_version")
-    if version not in ACCEPTED_VERSIONS:
-        raise MonitoringContractError(f"Неизвестная версия monitoring_metric: {version!r}")
-    contract = deepcopy(payload)
-    if version == ACCEPTED_VERSIONS[0]:
-        if contract.get("status") == "computed" and contract.get("evaluation_unit") != "turn":
-            raise MonitoringContractError("monitoring_metric.v1 dialogue нельзя восстановить без turn_index")
-        contract["umr_version"] = UMR_VERSION
-        contract["assessment_mode"] = "qa"
-        if contract.get("status") == "not_evaluable":
-            contract["status"] = "not_computable"
-        contract.pop("evaluation_unit", None)
-        contract.pop("group_column", None)
-    if contract.get("status") == "computed" and not contract.get("formula"):
-        try:
-            contract["formula"] = contract_formula(contract)
-        except (KeyError, TypeError):
-            pass  # структура неполная — validate скажет, чего не хватает
-    contract["contract_version"] = VERSION
-    return contract
-
-
 def validate_monitoring_metric(payload: object, *, require_computed: bool = True) -> dict:
     if not isinstance(payload, dict):
         raise MonitoringContractError("monitoring_metric должен быть JSON object")
-    contract = _upgrade_contract(payload)
-    if require(contract, "umr_version") != UMR_VERSION:
-        raise MonitoringContractError(f"Неизвестная версия UMR: {contract.get('umr_version')!r}")
+    version = payload.get("contract_version")
+    if version != VERSION:
+        raise MonitoringContractError(
+            f"Версия monitoring_metric {version!r} не поддерживается, ожидается {VERSION}: "
+            "обновите адаптер и ноды до одной версии пакета laim_monitoring"
+        )
+    contract = deepcopy(payload)
     status = require(contract, "status", {"computed", "not_computable"})
     if status != "computed":
         if require_computed:
@@ -126,66 +70,27 @@ def validate_monitoring_metric(payload: object, *, require_computed: bool = True
         return contract
 
     require(contract, "basket_id")
-    require(contract, "name")
-    if require(contract, "score_column") != "main_metric":
-        raise MonitoringContractError("Единственная каноническая score-колонка: main_metric")
+    if not str(contract.get("metric_name") or "").strip():
+        raise MonitoringContractError("metric_name пуст")
     require(contract, "assessment_mode", ASSESSMENT_MODES)
 
-    scoring = require(contract, "scoring")
-    if not isinstance(scoring, dict):
-        raise MonitoringContractError("scoring должен быть object")
-    method = require(scoring, "method", set(METHOD_ROLES) | {"formula"})
-    sources = require(scoring, "sources")
-    if not isinstance(sources, list) or not sources:
-        raise MonitoringContractError("scoring.sources должен быть непустым списком")
-    source_ids = set()
-    names = set()
-    role_counts: dict[str, int] = {}
-    for source in sources:
-        if not isinstance(source, dict):
-            raise MonitoringContractError("Каждый scoring source должен быть object")
-        source_id = require(source, "source_id")
-        if source_id in source_ids:
-            raise MonitoringContractError(f"Повторяется source_id: {source_id}")
-        source_ids.add(source_id)
-        require(source, "column_name")
-        role = require(source, "role", ROLES)
-        role_counts[role] = role_counts.get(role, 0) + 1
-        # Адаптер публикует значения уже нормализованными: числа и метки.
-        require(source, "normalization", {"numeric", "label"})
-        require(source, "polarity", {"direct"})
-        name = source_name(source)
+    inputs = require(contract, "inputs")
+    if not isinstance(inputs, list) or not inputs:
+        raise MonitoringContractError("inputs должен быть непустым списком")
+    names: set[str] = set()
+    for item in inputs:
+        if not isinstance(item, dict):
+            raise MonitoringContractError("Каждый вход должен быть object {name, column, judged}")
+        name = str(require(item, "name"))
         if not name.isidentifier() or name in formula.HELPERS or name == WEIGHT:
-            raise MonitoringContractError(f"Недопустимое имя входа формулы: {name!r}")
+            raise MonitoringContractError(f"Недопустимое имя входа: {name!r}")
         if name in names:
-            raise MonitoringContractError(f"Повторяется имя входа формулы: {name!r}")
+            raise MonitoringContractError(f"Повторяется имя входа: {name!r}")
         names.add(name)
-    if method == "formula":
-        if not isinstance(contract.get("formula"), str):
-            raise MonitoringContractError("method=formula требует текст formula")
-    else:
-        expected_roles = METHOD_ROLES[method]
-        if set(role_counts) != set(expected_roles):
-            raise MonitoringContractError(
-                f"Метод {method} требует роли {sorted(expected_roles)}, получено {sorted(role_counts)}"
-            )
-        for role, (minimum, maximum) in expected_roles.items():
-            count = role_counts[role]
-            if count < minimum or (maximum is not None and count > maximum):
-                raise MonitoringContractError(f"Недопустимое число источников роли {role}: {count}")
-    missing_policy = require(scoring, "missing_policy", MISSING)
-    denominator = scoring.get("majority_denominator")
-    if method == "majority" and denominator not in {"declared", "present"}:
-        raise MonitoringContractError("majority требует denominator declared или present")
-    if method != "majority" and denominator is not None:
-        raise MonitoringContractError("majority_denominator допустим только для majority")
-    aggregation = require(contract, "aggregation")
-    reducer = require(aggregation, "method", {"mean", "frequency_weighted_mean"})
-    weight_column = aggregation.get("weight_column")
-    if reducer == "frequency_weighted_mean" and weight_column != "input_query_count":
-        raise MonitoringContractError("Weighted mean требует input_query_count")
-    if reducer == "mean" and weight_column is not None:
-        raise MonitoringContractError("mean не должен объявлять weight_column")
+        if not str(require(item, "column") or "").strip():
+            raise MonitoringContractError(f"Вход {name!r}: пустое имя колонки")
+        if not isinstance(require(item, "judged"), bool):
+            raise MonitoringContractError(f"Вход {name!r}: judged должен быть true/false")
 
     try:
         parsed = formula.parse(require(contract, "formula"))
@@ -194,41 +99,41 @@ def validate_monitoring_metric(payload: object, *, require_computed: bool = True
     unknown = [name for name in parsed.inputs if name not in names and name != WEIGHT]
     if unknown:
         raise MonitoringContractError(
-            f"Формула ссылается на входы {unknown}, объявлены {sorted(names)} и {_WEIGHT}"
+            f"Формула ссылается на входы {unknown}, объявлены {sorted(names)} и {WEIGHT}"
         )
+
     baseline = require(contract, "baseline")
     to_decimal(require(baseline, "value"), "baseline.value")
-    to_decimal(require(baseline, "recomputed_value"), "baseline.recomputed_value")
-    require(baseline, "scale", {"ratio", "raw"})
-    validation = require(contract, "primary_validation")
-    if validation.get("affects_monitoring") is not False:
-        raise MonitoringContractError("Primary validation threshold не должен влиять на monitoring")
+    if baseline.get("reconciliation") != "match":
+        raise MonitoringContractError(
+            "baseline не воспроизведён пересчётом на эталонной корзине "
+            f"(reconciliation={baseline.get('reconciliation')!r}): сравнивать с ним нельзя"
+        )
     return contract
 
 
-def judge_score_contract(contract: dict) -> dict:
-    """Контракт, в котором судья ставит готовый score единицы (assessment_score).
+def uses_weight(contract: dict) -> bool:
+    return WEIGHT in formula.parse(contract["formula"]).inputs
 
-    Используется там, где формула отчёта неприменима: prediction не наблюдается
-    в трейсах либо единица оценки — целый диалог. Ассесор и km-dynamic берут
-    его из одного места, чтобы считать одно и то же.
+
+def judged_inputs(contract: dict) -> list[dict]:
+    return [item for item in contract["inputs"] if item["judged"]]
+
+
+def agent_inputs(contract: dict) -> list[dict]:
+    return [item for item in contract["inputs"] if not item["judged"]]
+
+
+def judge_score_contract(contract: dict) -> dict:
+    """Контракт, где судья ставит готовый score единицы в main_metric.
+
+    Применяется, когда формулу отчёта на мониторинге посчитать нельзя: ответ
+    агента не наблюдается в трейсах либо единица — целый диалог. Ассесор и
+    km-dynamic берут его отсюда, чтобы считать одно и то же.
     """
     result = deepcopy(contract)
-    weighted = contract.get("aggregation", {}).get("method") == "frequency_weighted_mean"
-    result["scoring"] = {
-        "method": "identity",
-        "sources": [{
-            "source_id": JUDGE_SCORE_SOURCE_ID,
-            "name": JUDGE_SCORE_SOURCE_ID,
-            "column_name": "main_metric",
-            "role": "final_score",
-            "normalization": "numeric",
-            "polarity": "direct",
-        }],
-        "missing_policy": contract["scoring"]["missing_policy"],
-        "majority_denominator": None,
-    }
+    result["inputs"] = [{"name": JUDGE_SCORE_INPUT, "column": "main_metric", "judged": True}]
     result["formula"] = (
-        f"wmean({JUDGE_SCORE_SOURCE_ID}, {WEIGHT})" if weighted else f"mean({JUDGE_SCORE_SOURCE_ID})"
+        f"wmean({JUDGE_SCORE_INPUT}, {WEIGHT})" if uses_weight(contract) else f"mean({JUDGE_SCORE_INPUT})"
     )
     return result

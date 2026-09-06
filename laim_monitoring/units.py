@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .contract import ASSESSMENT_MODES, require, validate_monitoring_metric
+from .contract import ASSESSMENT_MODES, require, uses_weight
 from .errors import MonitoringContractError
 from .values import blank, to_decimal, value_key
 
@@ -23,13 +23,8 @@ def _constant(values: list[object], name: str) -> object | None:
     return present[0]
 
 
-def _source_values(row, sources: list[dict]) -> dict[str, object]:
-    result = {}
-    for source in sources:
-        column = source["column_name"]
-        if column in row.index:
-            result[source["source_id"]] = row[column]
-    return result
+def _input_values(row, inputs: list[dict]) -> dict[str, object]:
+    return {item["name"]: row[item["column"]] for item in inputs if item["column"] in row.index}
 
 
 def _turn_order(value: object) -> int | None:
@@ -326,8 +321,7 @@ def _current_turn(row) -> dict[str, object]:
 def _turn_record(
     frame,
     position,
-    sources,
-    score_column,
+    inputs,
     *,
     mode,
     group=None,
@@ -341,7 +335,7 @@ def _turn_record(
         "input_query": row["input_query"],
         "output_answer": row["output_answer"],
         "input_query_count": row.get("input_query_count", 1),
-        **_source_values(row, sources),
+        **_input_values(row, inputs),
     }
     current = (
         _turn(row, len(history or ()) + 1)
@@ -350,8 +344,8 @@ def _turn_record(
     record["assessment_context"] = {"mode": mode, "current_turn": current}
     if mode == "turn_with_history":
         record["assessment_context"]["history"] = list(history or ())
-    if score_column in frame:
-        record[score_column] = row[score_column]
+    if "main_metric" in frame:
+        record["main_metric"] = row["main_metric"]
     return record
 
 
@@ -362,22 +356,14 @@ def _unitize(frame: pd.DataFrame, contract: dict) -> pd.DataFrame:
         query_label(value, f"row-{position}")
         for position, value in enumerate(frame["query_id"].tolist())
     ]
-    sources = contract.get("scoring", {}).get("sources", [])
-    score_column = contract.get("score_column", "main_metric")
-    weighted = (
-        contract.get("aggregation", {}).get("method")
-        == "frequency_weighted_mean"
-    )
+    inputs = contract["inputs"]
+    weighted = uses_weight(contract)
     mode = require(contract, "assessment_mode", ASSESSMENT_MODES)
 
     records = []
     if mode == "qa":
         for position in range(len(frame)):
-            records.append(_turn_record(
-                frame, position, sources, score_column,
-                mode=mode,
-                group=None,
-            ))
+            records.append(_turn_record(frame, position, inputs, mode=mode, group=None))
         return pd.DataFrame(records)
 
     groups = _ordered_groups(frame)
@@ -386,8 +372,7 @@ def _unitize(frame: pd.DataFrame, contract: dict) -> pd.DataFrame:
             history = []
             for position in positions:
                 records.append(_turn_record(
-                    frame, position, sources, score_column,
-                    mode=mode, group=group, history=history,
+                    frame, position, inputs, mode=mode, group=group, history=history,
                 ))
                 history.append(_turn(frame.iloc[position], len(history) + 1))
         return pd.DataFrame(records)
@@ -408,17 +393,15 @@ def _unitize(frame: pd.DataFrame, contract: dict) -> pd.DataFrame:
                 part["input_query_count"].tolist(), "input_query_count"
             ) if weighted else 1,
         }
-        for source in sources:
-            column = source["column_name"]
-            if column in part:
-                record[source["source_id"]] = _constant(
-                    part[column].tolist(), column
-                )
-        if score_column in part:
-            record[score_column] = _constant(part[score_column].tolist(), score_column)
+        for item in inputs:
+            if item["column"] in part:
+                record[item["name"]] = _constant(part[item["column"]].tolist(), item["column"])
+        if "main_metric" in part:
+            record["main_metric"] = _constant(part["main_metric"].tolist(), "main_metric")
         records.append(record)
     return pd.DataFrame(records)
 
 
-def unitize(frame: pd.DataFrame, payload: dict) -> pd.DataFrame:
-    return _unitize(frame, validate_monitoring_metric(payload))
+def unitize(frame: pd.DataFrame, contract: dict) -> pd.DataFrame:
+    """Единицы оценки по уже проверенному контракту (см. validate_monitoring_metric)."""
+    return _unitize(frame, contract)

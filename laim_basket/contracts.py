@@ -110,29 +110,21 @@ LAYOUT_SCHEMA = {
     },
 }
 
-_SOURCE = {
+_INPUT = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["column_id", "role", "normalization", "polarity"],
+    "required": ["column_id", "name", "judged"],
     "properties": {
         "column_id": {"type": "string", "pattern": "^[A-Z]{1,3}$"},
-        # Имя входа в формуле (для method=formula); по умолчанию source_<n>.
+        # Имя входа в формуле.
         "name": {"type": "string", "pattern": "^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]{0,40}$"},
-        "role": {"enum": ["final_score", "criterion", "assessor_vote", "prediction", "target"]},
-        "normalization": {
-            "oneOf": [
-                {"enum": ["numeric", "label"]},
-                {"type": "object", "minProperties": 1, "additionalProperties": {"type": "number"}},
-            ],
-        },
-        "polarity": {"enum": ["direct", "inverted"]},
+        # true — колонку проставлял разметчик (судья воспроизведёт её на мониторинге);
+        # false — ответ агента, наблюдается в трейсах.
+        "judged": {"type": "boolean"},
     },
 }
 
-_EVIDENCE_FIELDS = (
-    "metric", "score", "assessment_mode", "missing_policy",
-    "denominator", "reducer", "release", "reported_value",
-)
+_EVIDENCE_FIELDS = ("metric", "formula", "assessment_mode", "release", "reported_value")
 
 MEASUREMENT_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -140,17 +132,13 @@ MEASUREMENT_SCHEMA = {
     "additionalProperties": False,
     "required": [
         "plan_version", "basket_id", "metric_name", "document_roles",
-        "assessment_mode", "score", "formula", "reducer", "release",
+        "assessment_mode", "formula", "inputs", "release",
         "reported_value_state", "reported_value", "evidence",
     ],
     "properties": {
-        "plan_version": {"const": "laim-measurement-plan.v2"},
+        "plan_version": {"const": "laim-measurement-plan.v3"},
         "basket_id": {"type": "string", "minLength": 1},
         "metric_name": {"type": "string", "minLength": 1},
-        # Формула КМ как она определена в отчёте о валидации, над именами
-        # источников (score.sources[].name) и weight. Обязательна при
-        # score.method=formula; для готовых методов null.
-        "formula": {"type": ["string", "null"], "maxLength": 500},
         "document_roles": {
             "type": "object", "additionalProperties": False,
             "required": ["instruction", "development_report", "validation_report"],
@@ -160,24 +148,9 @@ MEASUREMENT_SCHEMA = {
             },
         },
         "assessment_mode": {"enum": ["qa", "turn_with_history", "dialogue"]},
-        "score": {
-            "type": "object", "additionalProperties": False,
-            "required": ["method", "sources", "missing_policy", "majority_denominator"],
-            "properties": {
-                "method": {"enum": [
-                    "identity", "accuracy", "mean_criteria", "all_criteria",
-                    "majority", "all_assessors", "formula",
-                ]},
-                "sources": {"type": "array", "minItems": 1, "items": _SOURCE},
-                "missing_policy": {"enum": ["fail", "exclude_unit", "exclude_value", "zero"]},
-                "majority_denominator": {"enum": ["declared", "present", None]},
-            },
-        },
-        "reducer": {
-            "type": "object", "additionalProperties": False,
-            "required": ["method"],
-            "properties": {"method": {"enum": ["mean", "frequency_weighted_mean"]}},
-        },
+        # Формула КМ как она определена в отчёте о валидации, над именами inputs и weight.
+        "formula": {"type": "string", "minLength": 1, "maxLength": 500},
+        "inputs": {"type": "array", "minItems": 1, "items": _INPUT},
         "release": {
             "type": "object", "additionalProperties": False,
             "required": ["threshold", "comparator", "scale", "precision"],

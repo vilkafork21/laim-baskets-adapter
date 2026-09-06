@@ -143,7 +143,7 @@ def _prove_flat_output(
     if confirmed_reason:
         logger.warning(
             "Flat output_answer: %d пустых ответов подтверждены моделью как "
-            "свойство данных (%s) — публикуются как есть под missing_policy",
+            "свойство данных (%s) — публикуются как есть, формула пропускает пустые",
             len(missing), confirmed_reason,
         )
         return
@@ -201,7 +201,7 @@ def _prove_flat_output(
             "ради заполненности. Если ни один кандидат не является семантическим "
             "ответом, верни тот же layout, добавив в evidence ключ output_gaps с "
             "кратким обоснованием — пустые ответы опубликуются честно и попадут "
-            "под missing_policy плана."
+            "пропущены формулой (агрегаты пропускают пустые значения)."
         ),
     )
 
@@ -335,8 +335,8 @@ def generate_layout(client, context, evidence, rejected_sheets=(), pinned_sheet=
     return proposal, resolved["layout"], resolved["frame"], resolved["conversion"]
 
 
-def _matching_identity_plans(frame, layout, target: Decimal, tolerance: Decimal) -> list[dict]:
-    """Identity-планы, которые воспроизводят заявленную КМ в пределах разряда."""
+def _matching_mean_columns(frame, layout, target: Decimal, tolerance: Decimal) -> list[dict]:
+    """Колонки, среднее (или взвешенное среднее) которых даёт заявленную КМ в пределах разряда."""
     import pandas as pd
 
     matches = []
@@ -372,11 +372,10 @@ def _matching_identity_plans(frame, layout, target: Decimal, tolerance: Decimal)
         for unit, reducer, value in variants:
             if abs(Decimal(str(value)) - target) <= tolerance:
                 matches.append({
-                    "method": "identity",
                     "column_id": column_id,
                     "column": name,
                     "assessment_mode": unit,
-                    "reducer": reducer,
+                    "formula": "wmean(x, weight)" if reducer == "frequency_weighted_mean" else "mean(x)",
                     "recomputed": float(value),
                 })
     return matches[:12]
@@ -386,10 +385,10 @@ def _reconciliation_gate(plan, km: dict, frame, layout) -> None:
     """Значение отчёта публикуется как baseline только если план воспроизводит
     его на корзине.
 
-    Расхождение означает либо не тот score/reducer, либо метрику отчёта вне
-    реестра (precision, F1, по классам). В обоих случаях baseline несопоставим
-    с КМ мониторинга: план отклоняется — с подсказкой альтернативного
-    identity-плана, если он есть в корзине, иначе ReconciliationError.
+    Расхождение означает, что формула или входы не соответствуют определению
+    метрики в отчёте: baseline несопоставим с КМ мониторинга, план отклоняется.
+    Если среднее какой-то колонки даёт число отчёта — модель получает подсказку,
+    иначе ReconciliationError.
     """
     reconciliation = km.get("reconciliation") or {}
     if plan.reported_value is None or reconciliation.get("status") != "mismatch":
@@ -399,13 +398,12 @@ def _reconciliation_gate(plan, km: dict, frame, layout) -> None:
     # Диагностика колонок идёт в ratio-домене; цель и разряд приводятся из
     # percent-домена, иначе физические 0/1 никогда не совпадут с 98.7.
     divisor = Decimal(100) if plan.scale == "percent" else Decimal(1)
-    matches = _matching_identity_plans(
+    matches = _matching_mean_columns(
         frame, layout, plan.reported_value / divisor, tolerance / divisor
     )
     details = {
         "metric_name": plan.metric_name,
-        "scoring_method": plan.method,
-        "reducer": plan.reducer,
+        "formula": plan.formula,
         "reported_value": str(plan.reported_value),
         "recomputed_value": km.get("recomputed_value"),
         "difference": str(difference),
@@ -413,17 +411,16 @@ def _reconciliation_gate(plan, km: dict, frame, layout) -> None:
     }
     if matches:
         raise NotEvaluableError(
-            "Пересчитанная КМ расходится с заявленной в validation report, а корзина "
-            "содержит identity-план, воспроизводящий заявленную: используй ровно один "
-            "доказанный plan из matching_identity_plans.",
-            matching_identity_plans=matches,
+            "Пересчитанная КМ расходится с заявленной в validation report, а среднее "
+            "одной из колонок воспроизводит заявленную: возьми её входом формулы "
+            "(matching_mean_columns, x — этот вход).",
+            matching_mean_columns=matches,
             **details,
         )
     raise ReconciliationError(
-        "Пересчитанная КМ не воспроизводит значение validation report ни одним "
-        "поддерживаемым планом: baseline не публикуется. Проверь, что метрика "
-        "отчёта — среднее построчных оценок корзины (identity/criteria/votes/"
-        "accuracy) и что корзина соответствует отчёту.",
+        "Пересчитанная КМ не воспроизводит значение validation report: baseline не "
+        "публикуется. Проверь формулу и входы против определения метрики в отчёте "
+        "и что корзина соответствует отчёту.",
         **details,
     )
 

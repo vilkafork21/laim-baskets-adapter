@@ -12,7 +12,6 @@ from decimal import Decimal
 from pathlib import Path
 
 import laim_monitoring
-from laim_monitoring import contract_formula
 
 from laim_basket.config import llm_config
 from laim_basket.errors import BasketError, PackageError
@@ -93,118 +92,62 @@ def _normalized(value: object, scale: str) -> tuple[float, str]:
 
 
 def _monitoring_metric(result: RunResult) -> dict[str, object]:
+    """Порт monitoring_metric: формула, входы, единица оценки и доказанный baseline."""
     plan = result.measurement_plan
-    # Совместимость с нодами на старом пакете: готовые методы уходят как v2
-    # (формула — дополнительное поле, старые ноды его не читают), явная
-    # формула требует v3 и обновлённых потребителей.
-    version = (
-        laim_monitoring.VERSION if plan is not None and plan.method == "formula"
-        else "laim-monitoring-metric.v2"
-    )
     contract = {
-        "contract_version": version,
-        "umr_version": "laim-umr.v2",
+        "contract_version": laim_monitoring.VERSION,
         "laim_monitoring_version": laim_monitoring.__version__,
+        "basket_id": result.km.get("basket_id"),
     }
-    if plan is None:
+    if plan is None or result.status != "computed":
         return {
             **contract,
             "status": "not_computable",
-            "basket_id": result.km.get("basket_id"),
-            "reason": result.km.get("reason", "MeasurementPlan не построен"),
-            "reason_code": result.km.get("reason_code"),
-        }
-    if result.status != "computed" or not isinstance(result.km.get("main_metric"), dict):
-        return {
-            **contract,
-            "status": "not_computable",
-            "basket_id": plan.basket_id,
-            "assessment_mode": plan.assessment_mode,
             "reason": result.km.get("reason", "КМ не вычислена"),
             "reason_code": result.km.get("reason_code"),
         }
-    metric = result.km["main_metric"]
-    recomputed_value, recomputed_scale = _normalized(metric["recomputed_value"], plan.scale)
+    recomputed_value, scale = _normalized(result.km["recomputed_value"], plan.scale)
     if plan.reported_value is None:
         return {
             **contract,
             "status": "not_computable",
-            "basket_id": plan.basket_id,
-            "assessment_mode": plan.assessment_mode,
             "reason": "Validation report не содержит официальный baseline",
             "reason_code": "official_baseline_missing",
-            "baseline": {
-                "value": None,
-                "scale": recomputed_scale,
-                "value_source": None,
-                "reported_value": None,
-                "reported_scale": None,
-                "recomputed_value": recomputed_value,
-                "reconciliation": result.km["reconciliation"]["status"],
-            },
+            "recomputed_value": recomputed_value,
         }
-    baseline_value, baseline_scale = _normalized(plan.reported_value, plan.scale)
-    if baseline_scale != recomputed_scale:
-        raise PackageError("Baseline и recomputed value имеют разные шкалы")
     if result.km["reconciliation"]["status"] != "match":
         # Инвариант: _reconciliation_gate не пропускает computed без совпадения.
-        raise PackageError(
-            "computed-план без воспроизведённого baseline",
-            reconciliation=result.km["reconciliation"],
-        )
-    published = {
+        raise PackageError("computed-план без воспроизведённого baseline", reconciliation=result.km["reconciliation"])
+    baseline_value, _ = _normalized(plan.reported_value, plan.scale)
+    return {
         **contract,
         "status": "computed",
-        "basket_id": plan.basket_id,
-        "name": plan.metric_name,
-        "score_column": "main_metric",
+        "metric_name": plan.metric_name,
         "assessment_mode": plan.assessment_mode,
-        "scoring": {
-            "method": plan.method,
-            "sources": [
-                {
-                    "source_id": f"source_{index}",
-                    "name": source["name"],
-                    "column_name": result.umr.published_columns[source["column_id"]],
-                    "role": source["role"],
-                    # Метрики публикуются уже нормализованными числами (value_map
-                    # и инверсия применены), поэтому контракт всегда direct/numeric;
-                    # labels сравниваются как labels.
-                    "normalization": "label" if source["role"] in ("prediction", "target") else "numeric",
-                    "polarity": "direct",
-                }
-                for index, source in enumerate(plan.sources, start=1)
-            ],
-            "missing_policy": plan.missing_policy,
-            "majority_denominator": plan.majority_denominator,
-        },
-        "aggregation": {
-            "method": plan.reducer,
-            "weight_column": "input_query_count"
-            if plan.reducer == "frequency_weighted_mean" else None,
-        },
+        "formula": plan.formula,
+        "inputs": [
+            {
+                "name": item["name"],
+                "column": result.umr.published_columns[item["column_id"]],
+                "judged": item["judged"],
+            }
+            for item in plan.inputs
+        ],
         "baseline": {
             "value": baseline_value,
-            "scale": baseline_scale,
-            "value_source": "validation_report",
+            "recomputed_value": recomputed_value,
+            "reconciliation": "match",
             "reported_value": float(plan.reported_value),
             "reported_scale": plan.scale,
-            "recomputed_value": recomputed_value,
-            "reconciliation": result.km["reconciliation"]["status"],
+            "scale": scale,
         },
         "primary_validation": {
             "threshold": float(plan.threshold) if plan.threshold is not None else None,
             "comparator": plan.comparator,
-            "scale": plan.scale,
             "verdict": result.km.get("threshold_verdict"),
-            "affects_monitoring": False,
         },
         "evidence": {key: list(value) for key, value in plan.evidence.items()},
-        "formula": plan.formula,
     }
-    # Формула всегда явная в контракте: для готовых методов — синтезированная.
-    published["formula"] = contract_formula(published)
-    return published
 
 
 def _parquet_safe(frame):

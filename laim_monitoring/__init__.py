@@ -1,42 +1,40 @@
-"""Общий контракт мониторинга LAIM: формула КМ, единицы оценки, агрегация.
+"""Общий пакет нод мониторинга LAIM: контракт КМ, единицы оценки, формула.
 
-Пакет вендорится в каждую ноду (Sber DS деплоит zip) из одного источника —
-`laim/monitoring/shared/laim_monitoring`. Версия печатается нодами в выходах,
-чтобы рассинхрон копий был виден в отчёте.
+Вендорится в каждую ноду целиком (Sber DS деплоит zip) из одного источника —
+`laim/monitoring/shared/laim_monitoring`. Версия печатается нодами в выходах.
 """
 
 __version__ = "3.0.0"
 
 from .contract import (
-    JUDGE_SCORE_SOURCE_ID,
+    JUDGE_SCORE_INPUT,
     VERSION,
-    contract_formula,
+    agent_inputs,
     judge_score_contract,
-    source_name,
+    judged_inputs,
     validate_monitoring_metric,
 )
 from .drift import prepare_drift_frames
 from .errors import MonitoringContractError
 from .formula import FormulaError, parse as parse_formula
-from .scoring import aggregate_main_metric, broadcast_scores, formula_columns, score_units, unit_scores
+from .scoring import aggregate_main_metric, broadcast_scores, evaluate_formula, unit_scores
 from .units import normalize_umr, unitize
 
 __all__ = [
     "FormulaError",
-    "JUDGE_SCORE_SOURCE_ID",
+    "JUDGE_SCORE_INPUT",
     "MonitoringContractError",
     "VERSION",
     "__version__",
+    "agent_inputs",
     "aggregate_main_metric",
     "broadcast_scores",
-    "contract_formula",
-    "formula_columns",
+    "evaluate_formula",
     "judge_score_contract",
+    "judged_inputs",
     "normalize_umr",
     "parse_formula",
     "prepare_drift_frames",
-    "score_units",
-    "source_name",
     "unit_scores",
     "unitize",
     "validate_monitoring_metric",

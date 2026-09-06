@@ -1,79 +1,37 @@
-"""Построчный score единиц и агрегация КМ формулой контракта."""
+"""Расчёт КМ формулой контракта: одно число на набор единиц и построчный score."""
 
 from __future__ import annotations
 
 import pandas as pd
 
 from . import formula
-from .contract import WEIGHT, source_name, validate_monitoring_metric
+from .contract import WEIGHT, agent_inputs, judged_inputs, uses_weight, validate_monitoring_metric
 from .errors import MonitoringContractError
 from .units import unitize
-from .values import blank
 
 
-def _normalized_column(units: pd.DataFrame, source: dict) -> pd.Series:
-    """Метки — текст, числа — float; пустое — NaN."""
-    raw = units[source["source_id"]]
-    if source["normalization"] == "label":
-        return raw.map(lambda v: None if blank(v) else str(v)).astype(object)
-    return pd.to_numeric(raw, errors="coerce").astype("float64")
+def _coerce(series: pd.Series) -> pd.Series:
+    """Числа — float64, всё остальное — метки (object)."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.notna().sum() == series.notna().sum():
+        return numeric.astype("float64")
+    return series.astype(object).where(series.notna(), None)
 
 
 def formula_columns(units: pd.DataFrame, contract: dict) -> dict[str, pd.Series]:
-    """Входы формулы, доступные в units; отсутствующие колонки просто не попадают."""
+    """Входы формулы, которые есть в единицах оценки."""
     columns = {
-        source_name(source): _normalized_column(units, source)
-        for source in contract["scoring"]["sources"]
-        if source["source_id"] in units
+        item["name"]: _coerce(units[item["name"]])
+        for item in contract["inputs"]
+        if item["name"] in units
     }
     if "input_query_count" in units:
         columns[WEIGHT] = pd.to_numeric(units["input_query_count"], errors="coerce").astype("float64")
     return columns
 
 
-def _check_blanks(columns: dict[str, pd.Series], names: tuple[str, ...], policy: str) -> None:
-    if policy != "fail":
-        return
-    for name in names:
-        if name in columns and columns[name].isna().any():
-            raise MonitoringContractError(f"missing_policy=fail: вход {name!r} содержит пропуски")
-
-
-def unit_scores(units: pd.DataFrame, contract: dict) -> pd.Series:
-    """Построчный score единиц: построчная часть формулы mean(E)/wmean(E, w).
-
-    Для формул без построчной части (macro-F1 и т.п.) — совпадение prediction
-    с target, если обе роли есть, иначе NaN: такой метрике построчный score
-    не нужен, он служит только дрифт-тестам и примерам в отчёте.
-    """
-    parsed = formula.parse(contract["formula"])
-    columns = formula_columns(units, contract)
-    unit = parsed.unit_expression()
-    if unit is None:
-        by_role = {source["role"]: source_name(source) for source in contract["scoring"]["sources"]}
-        if "prediction" in by_role and "target" in by_role:
-            unit = formula.parse(f"{by_role['prediction']} == {by_role['target']}")
-        else:
-            return pd.Series(float("nan"), index=units.index, dtype="float64")
-    missing = [name for name in unit.inputs if name not in columns]
-    if missing:
-        raise MonitoringContractError(f"Нет входов формулы в единицах оценки: {missing}")
-    _check_blanks(columns, unit.inputs, contract["scoring"]["missing_policy"])
-    try:
-        return unit.evaluate_rows(columns).astype("float64")
-    except formula.FormulaError as exc:
-        raise MonitoringContractError(f"Формула КМ: {exc}") from exc
-
-
-def score_units(units: pd.DataFrame, payload: dict) -> pd.Series:
-    return unit_scores(units, validate_monitoring_metric(payload))
-
-
-def aggregate_main_metric(frame: pd.DataFrame, payload: dict) -> dict[str, object]:
-    """КМ по единицам оценки той же формулой, что baseline на корзине."""
-    contract = validate_monitoring_metric(payload)
-    units = unitize(frame, contract)
-    policy = contract["scoring"]["missing_policy"]
+def evaluate_formula(units: pd.DataFrame, contract: dict) -> dict[str, object]:
+    """Значение формулы по единицам и покрытие (сколько единиц вошло в расчёт)."""
     parsed = formula.parse(contract["formula"])
     columns = formula_columns(units, contract)
     missing = [name for name in parsed.inputs if name not in columns]
@@ -82,7 +40,6 @@ def aggregate_main_metric(frame: pd.DataFrame, payload: dict) -> dict[str, objec
             f"В данных нет входов формулы {missing}: разметка судьи должна лежать в "
             "колонках контракта, ответ агента — в UMR"
         )
-    _check_blanks(columns, parsed.inputs, policy)
     try:
         value = parsed.evaluate(columns)
         unit = parsed.unit_expression()
@@ -94,10 +51,8 @@ def aggregate_main_metric(frame: pd.DataFrame, payload: dict) -> dict[str, objec
         raise MonitoringContractError(f"Формула КМ: {exc}") from exc
     if pd.isna(value) or not scored.any():
         raise MonitoringContractError("Нет оцененных единиц")
-    weighted = contract["aggregation"]["method"] == "frequency_weighted_mean"
-    weights = columns[WEIGHT] if weighted else pd.Series(1.0, index=units.index)
+    weights = columns[WEIGHT] if uses_weight(contract) else pd.Series(1.0, index=units.index)
     return {
-        "name": contract["name"],
         "value": float(value),
         "formula": parsed.text,
         "total_units": int(len(units)),
@@ -107,7 +62,41 @@ def aggregate_main_metric(frame: pd.DataFrame, payload: dict) -> dict[str, objec
     }
 
 
+def unit_scores(units: pd.DataFrame, contract: dict) -> pd.Series:
+    """Построчный score единиц: построчная часть формулы mean(E)/wmean(E, w).
+
+    Для формул без построчной части (macro-F1 и т.п.) — совпадение ответа
+    агента с размеченной меткой, если в контракте ровно по одному такому входу,
+    иначе NaN. Построчный score нужен только дрифт-тестам и примерам в отчёте.
+    """
+    parsed = formula.parse(contract["formula"])
+    unit = parsed.unit_expression()
+    if unit is None:
+        agent, judged = agent_inputs(contract), judged_inputs(contract)
+        if len(agent) == 1 and len(judged) == 1:
+            unit = formula.parse(f"{agent[0]['name']} == {judged[0]['name']}")
+        else:
+            return pd.Series(float("nan"), index=units.index, dtype="float64")
+    columns = formula_columns(units, contract)
+    missing = [name for name in unit.inputs if name not in columns]
+    if missing:
+        raise MonitoringContractError(f"Нет входов формулы в единицах оценки: {missing}")
+    try:
+        return unit.evaluate_rows(columns).astype("float64")
+    except formula.FormulaError as exc:
+        raise MonitoringContractError(f"Формула КМ: {exc}") from exc
+
+
+def aggregate_main_metric(frame: pd.DataFrame, payload: dict) -> dict[str, object]:
+    """КМ по UMR той же формулой, что baseline на корзине."""
+    contract = validate_monitoring_metric(payload)
+    result = evaluate_formula(unitize(frame, contract), contract)
+    result["name"] = contract["metric_name"]
+    return result
+
+
 def broadcast_scores(frame: pd.DataFrame, units: pd.DataFrame, scores: pd.Series) -> pd.DataFrame:
+    """Разложить score единиц на строки исходного UMR (колонка main_metric)."""
     if len(units) != len(scores):
         raise MonitoringContractError("Число scores не совпадает с числом units")
     result = frame.copy()

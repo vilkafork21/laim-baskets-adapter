@@ -5,7 +5,7 @@ import re
 from numbers import Integral
 
 REQUIRED_COLUMNS = ("query_id", "input_query", "output_answer")
-_METRIC = re.compile(r"^(?:\S+_metric|main_metric)$")
+_METRIC = re.compile(r"^main_metric$")  # входы формулы могут быть метками, числовой обязан быть только score
 
 
 def _missing(value: object) -> bool:
