@@ -135,6 +135,31 @@ def _monitoring_metric(result: RunResult) -> dict[str, object]:
     baseline_value, baseline_scale = _normalized(plan.reported_value, plan.scale)
     if baseline_scale != recomputed_scale:
         raise PackageError("Baseline и recomputed value имеют разные шкалы")
+    reconciliation = (result.km.get("reconciliation") or {}).get("status")
+    if reconciliation != "match":
+        # Второй рубеж после _reconciliation_gate: контракт со статусом computed
+        # обязан нести baseline, который план воспроизвёл на корзине. Иначе
+        # km-dynamic сравнит число из отчёта с тем, что посчитано другой формулой.
+        return {
+            **contract,
+            "status": "not_computable",
+            "basket_id": plan.basket_id,
+            "assessment_mode": plan.assessment_mode,
+            "reason": (
+                "Пересчитанная КМ не воспроизводит значение validation report "
+                f"(reconciliation={reconciliation!r}): baseline не публикуется"
+            ),
+            "reason_code": "km_reconciliation_mismatch",
+            "baseline": {
+                "value": None,
+                "scale": baseline_scale,
+                "value_source": None,
+                "reported_value": float(plan.reported_value),
+                "reported_scale": plan.scale,
+                "recomputed_value": recomputed_value,
+                "reconciliation": reconciliation,
+            },
+        }
     return {
         **contract,
         "status": "computed",

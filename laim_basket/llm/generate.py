@@ -10,6 +10,7 @@ from ..contracts import LAYOUT_SCHEMA, MEASUREMENT_SCHEMA
 from ..errors import (
     LayoutError,
     NotEvaluableError,
+    ReconciliationError,
 )
 from ..layout import resolve_layout
 from ..measurement import reported_quantum, resolve_measurement_plan
@@ -382,13 +383,16 @@ def _matching_identity_plans(frame, layout, target: Decimal, tolerance: Decimal)
 
 
 def _reconciliation_gate(plan, km: dict, frame, layout) -> None:
-    """Отчёт о валидации — источник истины КМ: публикуется его значение.
+    """Отчёт о валидации — источник истины КМ, но публиковать его значение можно
+    только когда план воспроизводит его на корзине.
 
-    Расхождение пересчёта отправляется в repair только когда в корзине есть
-    доказуемо сходящийся альтернативный identity-план (выбран не тот score);
-    без такой альтернативы план принимается, а расхождение остаётся честной
-    пометкой reconciliation="mismatch" в контракте (решение оператора контура:
-    baseline по умолчанию — из отчёта о валидации).
+    Расхождение пересчёта с заявленным значением означает одно из двух: выбран
+    не тот score/reducer, либо в отчёте метрика, которой нет в реестре плана
+    (precision, F1, метрика по классам). В обоих случаях baseline несопоставим
+    с тем, что посчитает мониторинг, поэтому план отклоняется: с подсказкой
+    альтернативного identity-плана, если корзина его содержит, иначе как
+    not_evaluable с кодом km_reconciliation_mismatch. Молчаливой публикации
+    «заявленного с пометкой mismatch» больше нет.
     """
     reconciliation = km.get("reconciliation") or {}
     if plan.reported_value is None or reconciliation.get("status") != "mismatch":
@@ -401,22 +405,35 @@ def _reconciliation_gate(plan, km: dict, frame, layout) -> None:
     matches = _matching_identity_plans(
         frame, layout, plan.reported_value / divisor, tolerance / divisor
     )
-    if not matches:
-        logger.warning(
-            "Пересчитанная КМ (%s) расходится с заявленной в validation report "
-            "(%s); публикуется заявленная, reconciliation=mismatch",
-            km.get("recomputed_value"), plan.reported_value,
+    details = {
+        "metric_name": plan.metric_name,
+        "scoring_method": plan.method,
+        "reducer": plan.reducer,
+        "reported_value": str(plan.reported_value),
+        "recomputed_value": km.get("recomputed_value"),
+        "difference": str(difference),
+        "published_quantum": str(tolerance),
+    }
+    if matches:
+        raise NotEvaluableError(
+            "Пересчитанная КМ расходится с заявленной в validation report, а корзина "
+            "содержит identity-план, воспроизводящий заявленную: используй ровно один "
+            "доказанный plan из matching_identity_plans.",
+            matching_identity_plans=matches,
+            **details,
         )
-        return
-    raise NotEvaluableError(
-        "Пересчитанная КМ расходится с заявленной в validation report, а корзина "
-        "содержит identity-план, воспроизводящий заявленную: используй ровно один "
-        "доказанный plan из matching_identity_plans.",
-        reported_value=str(plan.reported_value),
-        recomputed_value=km.get("recomputed_value"),
-        difference=str(difference),
-        published_quantum=str(tolerance),
-        matching_identity_plans=matches,
+    logger.error(
+        "Пересчитанная КМ (%s) не воспроизводит заявленную в validation report "
+        "(%s): формула плана не совпадает с формулой отчёта либо метрика отчёта "
+        "не поддерживается реестром; baseline не публикуется",
+        km.get("recomputed_value"), plan.reported_value,
+    )
+    raise ReconciliationError(
+        "Пересчитанная КМ не воспроизводит значение validation report ни одним "
+        "поддерживаемым планом: baseline не публикуется. Проверь, что метрика "
+        "отчёта — среднее построчных оценок корзины (identity/criteria/votes/"
+        "accuracy) и что корзина соответствует отчёту.",
+        **details,
     )
 
 

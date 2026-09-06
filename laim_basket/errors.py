@@ -44,6 +44,16 @@ class NotEvaluableError(BasketError):
     reason_code = "not_evaluable"
 
 
+class ReconciliationError(NotEvaluableError):
+    """Пересчёт КМ по корзине не воспроизводит значение validation report.
+
+    Формула плана и формула отчёта расходятся: baseline нельзя публиковать,
+    иначе мониторинг сравнит несопоставимые величины и покрасит светофор.
+    """
+
+    reason_code = "km_reconciliation_mismatch"
+
+
 # Низкоуровневые имена transform сохранены как алиасы, а не отдельные контракты.
 class ProfileError(LayoutError):
     pass
