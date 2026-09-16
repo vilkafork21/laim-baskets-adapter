@@ -14,8 +14,8 @@ jobs:
     timeout-minutes: 10
     env:
       SOURCE_SHA: 706067411c2abec1eb27d5629179774496738a39
-      RELEASE_DIR: ${{ runner.temp }}/laim-adapter-release
-      VERIFY_DIR: ${{ runner.temp }}/laim-adapter-unpacked
+      RELEASE_DIR: /tmp/laim-adapter-release
+      VERIFY_DIR: /tmp/laim-adapter-unpacked
     steps:
       - name: Получить неизменённый снимок исходников
         uses: actions/checkout@v4
@@ -51,7 +51,6 @@ jobs:
           python - <<'PY'
           import ast
           import hashlib
-          import importlib
           import json
           import os
           from pathlib import Path, PurePosixPath
