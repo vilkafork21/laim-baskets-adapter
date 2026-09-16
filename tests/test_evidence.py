@@ -1,10 +1,11 @@
 """Снимок книги: якорные строки, статистика колонок, ограниченный размер."""
+
 from __future__ import annotations
 
 import json
 
-
 from helpers import make_workbook
+
 from laim_basket.evidence.workbook import workbook_evidence
 from laim_basket.reading.xlsx_reader import read_workbook
 
@@ -29,9 +30,11 @@ def test_snapshot_has_anchors_and_column_stats(tmp_path):
 
 
 def test_snapshot_carries_merges_and_dialogue_hint(tmp_path):
-    rows = [["s", "messages", "m"],
-            [1, "КЛИЕНТ: привет АГЕНТ: здравствуйте КЛИЕНТ: вопрос", 1],
-            [2, "КЛИЕНТ: ещё АГЕНТ: ответ АГЕНТ: уточнение", 0]]
+    rows = [
+        ["s", "messages", "m"],
+        [1, "КЛИЕНТ: привет АГЕНТ: здравствуйте КЛИЕНТ: вопрос", 1],
+        [2, "КЛИЕНТ: ещё АГЕНТ: ответ АГЕНТ: уточнение", 0],
+    ]
     snapshot = workbook_evidence(_sheets(tmp_path, rows, merges=["A2:A3"]))
     sheet = snapshot["sheets"][0]
     assert "A2:A3" in sheet["merged"]

@@ -1,9 +1,10 @@
 """Помощники поведенческих тестов: сборка пакетов корзин и FakeClient."""
+
 from __future__ import annotations
 
 import json
-from html import escape
 import zipfile
+from html import escape
 from pathlib import Path
 
 import openpyxl
@@ -40,7 +41,9 @@ def make_docx(path: Path, paragraphs=(), heading: str | None = None, table=None)
     if table:
         rows = "".join(
             "<w:tr>"
-            + "".join(f"<w:tc><w:p><w:r><w:t>{escape(str(cell))}</w:t></w:r></w:p></w:tc>" for cell in row)
+            + "".join(
+                f"<w:tc><w:p><w:r><w:t>{escape(str(cell))}</w:t></w:r></w:p></w:tc>" for cell in row
+            )
             + "</w:tr>"
             for row in table
         )
@@ -49,18 +52,27 @@ def make_docx(path: Path, paragraphs=(), heading: str | None = None, table=None)
         archive.writestr("word/document.xml", _DOCX_SHELL.format(body="".join(parts)))
 
 
-def make_package(tmp_path: Path, sheets: dict, validation=(), development=(),
-                 instruction: str = "Оценка: 1 — верно, 0 — неверно",
-                 name: str = "CI09000001_test") -> Path:
+def make_package(
+    tmp_path: Path,
+    sheets: dict,
+    validation=(),
+    development=(),
+    instruction: str = "Оценка: 1 — верно, 0 — неверно",
+    name: str = "CI09000001_test",
+) -> Path:
     package = tmp_path / name
     package.mkdir()
     make_workbook(package / "test_set.xlsx", sheets)
-    make_docx(package / "validation_report.docx",
-              paragraphs=validation or ("Ключевая метрика Accuracy равна 0.5",),
-              heading="Отчет о валидации")
-    make_docx(package / "development_report.docx",
-              paragraphs=development or ("Расшифровка колонок: q - запрос, a - ответ",),
-              heading="Отчет о разработке")
+    make_docx(
+        package / "validation_report.docx",
+        paragraphs=validation or ("Ключевая метрика Accuracy равна 0.5",),
+        heading="Отчет о валидации",
+    )
+    make_docx(
+        package / "development_report.docx",
+        paragraphs=development or ("Расшифровка колонок: q - запрос, a - ответ",),
+        heading="Отчет о разработке",
+    )
     (package / "assessor_instruction.txt").write_text(instruction, encoding="utf-8")
     return package
 

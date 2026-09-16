@@ -31,8 +31,12 @@ def build_region(sheet: RawSheet, header_rows: list[int], last_data_row: int) ->
             sheet_rows=sheet.n_rows,
         )
     merge_map = header_merge_map(sheet, header_rows0)
-    raw_names = [merge_header(sheet, header_rows0, column, merge_map) for column in range(sheet.n_cols)]
-    names = [name or f"unnamed_{get_column_letter(column + 1)}" for column, name in enumerate(raw_names)]
+    raw_names = [
+        merge_header(sheet, header_rows0, column, merge_map) for column in range(sheet.n_cols)
+    ]
+    names = [
+        name or f"unnamed_{get_column_letter(column + 1)}" for column, name in enumerate(raw_names)
+    ]
     names = dedup_names(names)
     rows = [list(sheet.grid[row]) for row in range(first_data0, last_data0 + 1)]
     return TableRegion(

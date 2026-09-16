@@ -39,16 +39,17 @@ _REPAIR = (
 def _content_text(message: dict) -> str:
     content = message.get("content")
     if isinstance(content, list):  # некоторые шлюзы отдают список частей
-        content = "".join(
-            part.get("text", "") for part in content if isinstance(part, dict)
-        )
+        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str):
         raise LlmError("В ответе нет текстового content", message_keys=sorted(message))
     if "<think>" in content and "</think>" not in content:
         # контурный формат обрыва бюджета (reasoning внутри content) —
         # обязан эскалировать max_tokens так же, как finish_reason=length
-        raise LlmError("Рассуждения оборваны (незакрытый <think>) — усечённый ответ",
-                       retryable=True, truncated=True)
+        raise LlmError(
+            "Рассуждения оборваны (незакрытый <think>) — усечённый ответ",
+            retryable=True,
+            truncated=True,
+        )
     return _THINK.sub("", content).strip()
 
 
@@ -74,8 +75,11 @@ class LlmClient:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self._calls += 1
         record = {
-            "url": self.config.url, "model": self.config.model,
-            "request": body, "http_status": status, "response": payload,
+            "url": self.config.url,
+            "model": self.config.model,
+            "request": body,
+            "http_status": status,
+            "response": payload,
         }
         path = self.out_dir / f"{label}_call_{self._calls}.json"
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -84,7 +88,9 @@ class LlmClient:
         """Одна попытка. LlmError с retryable=True — кандидат на повтор."""
         try:
             response = requests.post(
-                self.config.url, headers=headers, json=body,
+                self.config.url,
+                headers=headers,
+                json=body,
                 timeout=(self.config.connect_timeout, self.config.read_timeout),
             )
         except requests.RequestException as exc:
@@ -93,28 +99,32 @@ class LlmClient:
         try:
             payload = response.json()
         except ValueError:
-            payload = {"raw_text": response.text[:defaults.ERROR_PAYLOAD_CHAR_CAP]}
+            payload = {"raw_text": response.text[: defaults.ERROR_PAYLOAD_CHAR_CAP]}
         self._persist(label, body, response.status_code, payload)
 
         if response.status_code in _RETRYABLE_STATUS:
             raise LlmError(f"HTTP {response.status_code} от шлюза", retryable=True)
         if response.status_code != 200:
-            raise LlmError(f"HTTP {response.status_code}: {str(payload)[:300]}",
-                           status=response.status_code)
+            raise LlmError(
+                f"HTTP {response.status_code}: {str(payload)[:300]}", status=response.status_code
+            )
         try:
             choice = payload["choices"][0]
-            if choice.get("finish_reason") == "length" and not choice["message"].get("content"):
+            if choice.get("finish_reason") == "length":
                 raise LlmError(
                     "Ответ обрезан по max_tokens (рассуждения съели бюджет) — повтор",
-                    retryable=True, truncated=True,
+                    retryable=True,
+                    truncated=True,
                 )
             return _content_text(choice["message"])
-        except (KeyError, IndexError) as exc:
-            raise LlmError(f"Неожиданная структура ответа: {exc}",
-                           payload_keys=sorted(payload), retryable=True) from exc
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise LlmError(
+                f"Неожиданная структура ответа: {exc}",
+                payload_type=type(payload).__name__,
+                retryable=True,
+            ) from exc
 
-    def chat(self, messages: list[dict], label: str,
-             response_schema: dict | None = None) -> str:
+    def chat(self, messages: list[dict], label: str, response_schema: dict | None = None) -> str:
         self.calls += 1
         body = {
             "model": self.config.model,
@@ -129,8 +139,10 @@ class LlmClient:
                 "type": "json_schema",
                 "json_schema": {"name": label, "schema": response_schema},
             }
-        headers = {"Authorization": f"Bearer {self.config.api_key}",
-                   "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
 
         last_error = None
         attempt = 0
@@ -148,7 +160,8 @@ class LlmClient:
                     self.structured_output = False
                     logger.warning(
                         "Шлюз отклонил response_format (HTTP 400) — "
-                        "фолбэк на текстовый JSON до конца прогона")
+                        "фолбэк на текстовый JSON до конца прогона"
+                    )
                     continue
                 if not exc.details.get("retryable"):
                     raise
@@ -177,7 +190,7 @@ def extract_json(content: str) -> dict | list:
     starts = [pos for pos in (content.find("{"), content.find("[")) if pos >= 0]
     if starts:
         try:
-            obj, _ = json.JSONDecoder().raw_decode(content[min(starts):])
+            obj, _ = json.JSONDecoder().raw_decode(content[min(starts) :])
             if isinstance(obj, (dict, list)):
                 return obj
         except json.JSONDecodeError:
@@ -185,8 +198,14 @@ def extract_json(content: str) -> dict | list:
     raise LlmError("В ответе нет корректного JSON-объекта или массива", content_head=content[:200])
 
 
-def request_structured(client: LlmClient, messages: list[dict], schema: dict,
-                       label: str, validate_extra=None, max_turns: int = 3) -> dict | list:
+def request_structured(
+    client: LlmClient,
+    messages: list[dict],
+    schema: dict,
+    label: str,
+    validate_extra=None,
+    max_turns: int = 3,
+) -> dict | list:
     """Цикл structured-JSON: schema в response_format (если шлюз умеет) и в
     промпте; локальная валидация всегда; validate_extra(obj) может бросить
     BasketError — её текст уходит модели как repair."""
@@ -209,20 +228,21 @@ def request_structured(client: LlmClient, messages: list[dict], schema: dict,
             last_error, last_exception = f"{type(exc).__name__}: {exc}", exc
             details = getattr(exc, "details", None)
             if details:  # без деталей (known_columns/missing) модель слепа
-                last_error += " | детали: " + json.dumps(
-                    details, ensure_ascii=False, default=str
-                )[:defaults.ERROR_PAYLOAD_CHAR_CAP]
+                last_error += (
+                    " | детали: "
+                    + json.dumps(details, ensure_ascii=False, default=str)[
+                        : defaults.ERROR_PAYLOAD_CHAR_CAP
+                    ]
+                )
         # Без этой записи причина repair видна только внутри следующего промпта:
         # прогон выглядит как немотивированное «модель не смогла».
-        logger.warning("%s: попытка %d/%d отклонена — %s",
-                       label, turn, max_turns, last_error)
+        logger.warning("%s: попытка %d/%d отклонена — %s", label, turn, max_turns, last_error)
         client.repair_turns += 1
         history.append({"role": "assistant", "content": content})
         history.append({"role": "user", "content": _REPAIR.format(error=last_error)})
     if isinstance(last_exception, BasketError) and not isinstance(last_exception, LlmError):
         raise last_exception
     raise StructuredOutputError(
-        f"LLM не дала валидный {label} за {max_turns} попыток; "
-        f"последняя ошибка: {last_error}",
+        f"LLM не дала валидный {label} за {max_turns} попыток; последняя ошибка: {last_error}",
         label=label,
     )

@@ -3,6 +3,7 @@
 Размер снимка ограничен константами defaults и не растёт с числом строк
 корзины: модель видит якорные строки и статистику колонок, а не данные.
 """
+
 from __future__ import annotations
 
 import re
@@ -53,19 +54,20 @@ def _anchor_rows(sheet: RawSheet) -> list[dict[str, object]]:
             previous = profile
             continue
         is_opening = len(anchors) < defaults.EVIDENCE_ANCHOR_ROWS
-        if (is_opening or profile != previous) and \
-                len(anchors) < 2 * defaults.EVIDENCE_ANCHOR_ROWS:
-            anchors.append({
-                "row": index + 1,
-                "cells": [_cap(value, defaults.EVIDENCE_CELL_CAP) for value in row],
-            })
+        if (is_opening or profile != previous) and len(anchors) < 2 * defaults.EVIDENCE_ANCHOR_ROWS:
+            anchors.append(
+                {
+                    "row": index + 1,
+                    "cells": [_cap(value, defaults.EVIDENCE_CELL_CAP) for value in row],
+                }
+            )
         previous = profile
     return anchors
 
 
 def _column_snapshots(sheet: RawSheet, header: int) -> list[dict[str, object]]:
     columns = []
-    rows = sheet.grid[header + 1:]
+    rows = sheet.grid[header + 1 :]
     for column in range(sheet.n_cols):
         present = [row[column] for row in rows if _text(row[column])]
         unique = Counter(_text(value) for value in present)
@@ -95,9 +97,7 @@ def _dialogue_markers(columns: list[dict[str, object]]) -> list[str]:
     found: dict[str, None] = {}
     for column in columns:
         markers = Counter(
-            marker
-            for value in column["samples"]
-            for marker in _BLOB_MARKER.findall(str(value))
+            marker for value in column["samples"] for marker in _BLOB_MARKER.findall(str(value))
         )
         if len(markers) >= 2:
             for marker in markers:
@@ -117,14 +117,16 @@ def workbook_evidence(sheets: dict[str, RawSheet]) -> dict[str, object]:
     for sheet in sheets.values():
         header = _header_candidate(sheet)
         columns = _column_snapshots(sheet, header)
-        snapshots.append({
-            "name": sheet.name,
-            "rows": sheet.n_rows,
-            "columns_count": sheet.n_cols,
-            "header_candidate_row": header + 1,
-            "anchor_rows": _anchor_rows(sheet),
-            "columns": columns,
-            "merged": _merged_ranges(sheet),
-            "dialogue_markers": _dialogue_markers(columns),
-        })
+        snapshots.append(
+            {
+                "name": sheet.name,
+                "rows": sheet.n_rows,
+                "columns_count": sheet.n_cols,
+                "header_candidate_row": header + 1,
+                "anchor_rows": _anchor_rows(sheet),
+                "columns": columns,
+                "merged": _merged_ranges(sheet),
+                "dialogue_markers": _dialogue_markers(columns),
+            }
+        )
     return {"sheets": snapshots}

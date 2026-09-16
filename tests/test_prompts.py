@@ -1,6 +1,6 @@
 """Промпты: документы в XML-тегах ролей, схема в конце, контекст перед задачей."""
-from __future__ import annotations
 
+from __future__ import annotations
 
 from laim_basket.llm.prompts import (
     layout_messages,
@@ -8,12 +8,21 @@ from laim_basket.llm.prompts import (
 )
 
 DOCS = (
-    {"port": "validation_report", "name": "validation_report.docx",
-     "paragraphs": ("# Отчет о валидации", "Accuracy | 0.93 | 0.9")},
-    {"port": "development_report", "name": "development_report.docx",
-     "paragraphs": ("Расшифровка колонок: mark - оценка",)},
-    {"port": "assessor_instruction", "name": "assessor_instruction.txt",
-     "paragraphs": ("Оценка 1/0",)},
+    {
+        "port": "validation_report",
+        "name": "validation_report.docx",
+        "paragraphs": ("# Отчет о валидации", "Accuracy | 0.93 | 0.9"),
+    },
+    {
+        "port": "development_report",
+        "name": "development_report.docx",
+        "paragraphs": ("Расшифровка колонок: mark - оценка",),
+    },
+    {
+        "port": "assessor_instruction",
+        "name": "assessor_instruction.txt",
+        "paragraphs": ("Оценка 1/0",),
+    },
 )
 
 
@@ -49,8 +58,13 @@ def test_truncated_document_is_logged(monkeypatch, caplog):
     from laim_basket import defaults
 
     monkeypatch.setattr(defaults, "DOCUMENT_CHAR_CAP", 40)
-    long_docs = ({"port": "validation_report", "name": "validation_report.docx",
-                  "paragraphs": tuple(f"абзац {index} " * 3 for index in range(10))},)
+    long_docs = (
+        {
+            "port": "validation_report",
+            "name": "validation_report.docx",
+            "paragraphs": tuple(f"абзац {index} " * 3 for index in range(10)),
+        },
+    )
     with caplog.at_level(logging.WARNING):
         messages = layout_messages({"sheets": []}, long_docs, "", frozenset())
     assert "validation_report" in caplog.text and "обрезан" in caplog.text

@@ -17,10 +17,7 @@ def validate_flat_canon(
     missing_values = {}
     for name in ("query_id", "input_query"):
         if name in frame.columns:
-            positions = [
-                index for index, value in enumerate(frame[name].tolist())
-                if blank(value)
-            ]
+            positions = [index for index, value in enumerate(frame[name].tolist()) if blank(value)]
             if positions:
                 missing_values[name] = {
                     "count": len(positions),
@@ -38,17 +35,18 @@ def validate_flat_canon(
         if _METRIC.match(str(name)):
             bad = sum(
                 not blank(value)
-                and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)))
+                and (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                )
                 for value in frame[name].tolist()
             )
             if bad:
                 type_violations.append({"column": str(name), "bad_values": bad})
     context_violations = []
     if "query_id" in frame.columns:
-        present_ids = [
-            value for value in frame["query_id"].tolist()
-            if not blank(value)
-        ]
+        present_ids = [value for value in frame["query_id"].tolist() if not blank(value)]
         if session_scoped:
             identity_keys = [
                 (
@@ -63,18 +61,22 @@ def validate_flat_canon(
         else:
             identity_keys = [(type(value).__name__, str(value)) for value in present_ids]
         if len(identity_keys) != len(set(identity_keys)):
-            context_violations.append({
-                "reason": (
-                    "duplicate_session_query_id" if session_scoped else "duplicate_query_id"
-                )
-            })
+            context_violations.append(
+                {
+                    "reason": (
+                        "duplicate_session_query_id" if session_scoped else "duplicate_query_id"
+                    )
+                }
+            )
     has_group = "reference_group_id" in frame
     has_order = "turn_index" in frame
     if has_group != has_order:
-        context_violations.append({
-            "reason": "paired_columns_required",
-            "missing": "turn_index" if has_group else "reference_group_id",
-        })
+        context_violations.append(
+            {
+                "reason": "paired_columns_required",
+                "missing": "turn_index" if has_group else "reference_group_id",
+            }
+        )
     elif has_group:
         groups: dict[str, list[int]] = {}
         blank_groups = []
@@ -92,10 +94,12 @@ def validate_flat_canon(
         if blank_groups:
             context_violations.append({"reason": "blank_group", "row_positions": blank_groups})
         if invalid_indexes:
-            context_violations.append({
-                "reason": "invalid_turn_index",
-                "row_positions": invalid_indexes,
-            })
+            context_violations.append(
+                {
+                    "reason": "invalid_turn_index",
+                    "row_positions": invalid_indexes,
+                }
+            )
         for group, indexes in groups.items():
             if len(indexes) != len(set(indexes)):
                 context_violations.append({"reason": "duplicate_turn_index", "group": group})
@@ -103,7 +107,10 @@ def validate_flat_canon(
                 context_violations.append({"reason": "turn_index_must_start_at_1", "group": group})
     status = (
         "passed"
-        if not missing_columns and not missing_values and not type_violations and not context_violations
+        if not missing_columns
+        and not missing_values
+        and not type_violations
+        and not context_violations
         else "failed"
     )
     return {

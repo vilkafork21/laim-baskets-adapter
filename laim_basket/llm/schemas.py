@@ -2,8 +2,9 @@
 
 Поле quotes стоит в properties первым: при последовательной генерации модель
 сперва выписывает основание из документов, затем решает. Физические границы
-данных и режим оценки в схемах отсутствуют — ими владеет только код.
+данных определяет код; заявленную единицу оценки проверяет по форме данных.
 """
+
 from __future__ import annotations
 
 _ADDRESS = {"type": "string", "pattern": "^[A-Z]{1,3}$"}
@@ -38,20 +39,36 @@ LAYOUT_SCHEMA = {
     "$defs": {"address": _ADDRESS},
     "type": "object",
     "additionalProperties": False,
-    "required": ["quotes", "sheet_name", "header_rows", "roles", "grouping",
-                 "dialogue_blob", "weight_column"],
+    "required": [
+        "quotes",
+        "sheet_name",
+        "header_rows",
+        "roles",
+        "grouping",
+        "dialogue_blob",
+        "weight_column",
+    ],
     "properties": {
         "quotes": _QUOTES,
         "sheet_name": {"type": "string", "minLength": 1},
         "header_rows": {
-            "type": "array", "minItems": 1, "uniqueItems": True,
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": True,
             "items": {"type": "integer", "minimum": 1},
         },
         "roles": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["query_id", "session_id", "input_query", "output_answer",
-                          "scenario", "assessor_id", "reference_answers"],
+            "required": [
+                "query_id",
+                "session_id",
+                "input_query",
+                "output_answer",
+                "scenario",
+                "assessor_id",
+                "reference_answers",
+            ],
             "properties": {
                 "query_id": _NULLABLE_ADDRESS,
                 "session_id": _NULLABLE_ADDRESS,
@@ -59,12 +76,12 @@ LAYOUT_SCHEMA = {
                 "output_answer": _OUTPUT_ADDRESS,
                 "scenario": _NULLABLE_ADDRESS,
                 "assessor_id": _NULLABLE_ADDRESS,
-                "reference_answers": {"type": "array",
-                                       "items": {"$ref": "#/$defs/address"}},
+                "reference_answers": {"type": "array", "items": {"$ref": "#/$defs/address"}},
             },
         },
         "grouping": {
-            "type": "object", "additionalProperties": False,
+            "type": "object",
+            "additionalProperties": False,
             "required": ["kind", "column"],
             "properties": {
                 "kind": {"enum": ["none", "merged_rows", "column", "blob_row"]},
@@ -75,9 +92,9 @@ LAYOUT_SCHEMA = {
             "oneOf": [
                 {"type": "null"},
                 {
-                    "type": "object", "additionalProperties": False,
-                    "required": ["column", "container", "question_marker",
-                                  "answer_marker"],
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["column", "container", "question_marker", "answer_marker"],
                     "properties": {
                         "column": {"$ref": "#/$defs/address"},
                         "container": {"enum": ["python_list", "plain_text"]},
@@ -97,13 +114,11 @@ _SOURCE = {
     "required": ["column_id", "role", "normalization", "polarity"],
     "properties": {
         "column_id": _ADDRESS,
-        "role": {"enum": ["final_score", "criterion", "assessor_vote",
-                           "prediction", "target"]},
+        "role": {"enum": ["final_score", "criterion", "assessor_vote", "prediction", "target"]},
         "normalization": {
             "oneOf": [
                 {"enum": ["numeric", "label"]},
-                {"type": "object", "minProperties": 1,
-                 "additionalProperties": {"type": "number"}},
+                {"type": "object", "minProperties": 1, "additionalProperties": {"type": "number"}},
             ],
         },
         "polarity": {"enum": ["direct", "inverted"]},
@@ -114,23 +129,49 @@ METRIC_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "additionalProperties": False,
-    "required": ["quotes", "metric_name", "method", "sources", "reducer",
-                 "missing_policy", "majority_denominator", "scale"],
+    "required": [
+        "quotes",
+        "metric_name",
+        "method",
+        "sources",
+        "reducer",
+        "missing_policy",
+        "majority_denominator",
+        "scale",
+    ],
     "properties": {
         "quotes": _QUOTES,
         "metric_name": {"type": "string", "minLength": 1},
-        "method": {"enum": ["identity", "accuracy", "mean_criteria",
-                             "all_criteria", "all_assessors", "majority"]},
+        "assessment_mode": {"enum": ["qa", "turn_with_history", "dialogue"]},
+        "method": {
+            "enum": [
+                "identity",
+                "accuracy",
+                "mean_criteria",
+                "all_criteria",
+                "all_assessors",
+                "majority",
+            ]
+        },
         "sources": {"type": "array", "minItems": 1, "items": _SOURCE},
         "reducer": {"enum": ["mean", "frequency_weighted_mean"]},
         "missing_policy": {"enum": ["fail", "exclude_unit", "exclude_value", "zero"]},
         "majority_denominator": {"enum": ["declared", "present", None]},
         "scale": {"enum": ["ratio", "percent", "raw"]},
+        "missing_values": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "array",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+            },
+        },
     },
 }
 
 BASELINE_CANDIDATE_SCHEMA = {
-    "type": "object", "additionalProperties": False,
+    "type": "object",
+    "additionalProperties": False,
     "required": ["metric_name", "raw", "paragraph", "kind", "slice_label", "is_key_metric"],
     "properties": {
         "metric_name": {"type": "string", "minLength": 1},
@@ -145,5 +186,6 @@ BASELINE_CANDIDATE_SCHEMA = {
 
 BASELINE_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "array", "items": BASELINE_CANDIDATE_SCHEMA,
+    "type": "array",
+    "items": BASELINE_CANDIDATE_SCHEMA,
 }

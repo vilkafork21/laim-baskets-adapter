@@ -1,4 +1,5 @@
 """Независимые этапы L -> S и K; провалы S/K не меняют собранную корзину."""
+
 from __future__ import annotations
 
 import json
@@ -11,12 +12,12 @@ from pathlib import Path
 
 from .config import llm_config
 from .errors import BasketError, ScorePlanError, SpecError
-from .metric.baseline import attach_baseline, failed_baseline
-from .metric.engine import evaluate
 from .export.umr import export_umr_workbook
 from .journal import Journal
 from .llm import tasks
 from .llm.client import LlmClient
+from .metric.baseline import attach_baseline, failed_baseline
+from .metric.engine import reconcile
 from .models import RunResult
 from .publish import publish_umr
 
@@ -37,8 +38,14 @@ def _atomic_json(path: Path, payload: object) -> None:
 def reset_out(out_dir: str | Path) -> None:
     out = Path(out_dir)
     shutil.rmtree(out / "debug", ignore_errors=True)
-    for pattern in ("umr_*.xlsx", "run_report.json", "km.json", "failure.json",
-                     ".*.tmp", ".*.tmp.xlsx"):
+    for pattern in (
+        "umr_*.xlsx",
+        "run_report.json",
+        "km.json",
+        "failure.json",
+        ".*.tmp",
+        ".*.tmp.xlsx",
+    ):
         for stale in out.glob(pattern):
             stale.unlink(missing_ok=True)
 
@@ -113,9 +120,11 @@ def run_package(
             continue
         journal.stage("layout", "ok", _ms(stage_started))
         break
-    journal.decision(sheet=outcome.layout.sheet_name,
-                     grouping=outcome.layout.grouping["kind"],
-                     basket_id_source="agent_ci" if (agent_ci or "").strip() else "package_name")
+    journal.decision(
+        sheet=outcome.layout.sheet_name,
+        grouping=outcome.layout.grouping["kind"],
+        basket_id_source="agent_ci" if (agent_ci or "").strip() else "package_name",
+    )
     _json(debug / "layout_proposal.json", outcome.proposal)
     _json(debug / "resolved_layout.json", outcome.layout.to_dict())
     _json(debug / "conversion.json", outcome.conversion)
@@ -126,16 +135,20 @@ def run_package(
     try:
         plan, km, published = tasks.run_metric(llm, context, outcome, journal)
         journal.stage("metric", "ok", _ms(stage_started))
-        journal.decision(assessment_mode=plan.assessment_mode, metric=plan.metric_name,
-                         method=plan.method, reducer=plan.reducer)
+        journal.decision(
+            assessment_mode=plan.assessment_mode,
+            metric=plan.metric_name,
+            method=plan.method,
+            reducer=plan.reducer,
+        )
     except BasketError as exc:
         reason = (
-            'Этап S. Ожидалось: исполнимый план оценки единиц на выбранном листе. '
-            f'Получено: {exc.reason_code}: {exc}. Действие: проверьте score-колонки, '
-            'политику пропусков, кеш формул и методику в документах; повторите запуск. '
-            'Лист не изменён; корзина опубликована без main_metric.'
+            "Этап S. Ожидалось: исполнимый план оценки единиц на выбранном листе. "
+            f"Получено: {exc.reason_code}: {exc}. Действие: проверьте score-колонки, "
+            "политику пропусков, кеш формул и методику в документах; повторите запуск. "
+            "Лист не изменён; корзина опубликована без main_metric."
         )
-        score_error = ScorePlanError(reason, cause=exc.to_dict(), stage='S')
+        score_error = ScorePlanError(reason, cause=exc.to_dict(), stage="S")
         km = _not_computable(context.basket_id, score_error)
         published = publish_umr(outcome.frame, outcome.layout, None)
         journal.stage("metric", "degraded", _ms(stage_started))
@@ -146,25 +159,32 @@ def run_package(
     baseline = None
     try:
         baseline = tasks.run_baseline(llm, context, outcome.layout.sheet_name, plan)
-        if plan is not None and baseline.state == 'declared':
+        if plan is not None and baseline.state == "declared":
             plan = attach_baseline(plan, baseline)
-            _scored, km = evaluate(outcome.frame, outcome.layout, plan)
+            km = reconcile(km, plan)
     except BasketError as exc:
         previous = baseline
         baseline = failed_baseline(
-            f'{exc.reason_code}: {exc}', ambiguous=previous is not None,
+            f"{exc.reason_code}: {exc}",
+            ambiguous=previous is not None,
             candidates=previous.candidates if previous is not None else (),
             rejected=previous.rejected if previous is not None else (),
         )
-    journal.stage("baseline", "ok" if baseline.state == 'declared' else "degraded", _ms(stage_started))
+    journal.stage(
+        "baseline", "ok" if baseline.state == "declared" else "degraded", _ms(stage_started)
+    )
     for warning in baseline.warnings:
-        journal.warning(warning['code'], warning['message'])
+        journal.warning(warning["code"], warning["message"])
     if baseline.reason_code:
         journal.warning(baseline.reason_code, baseline.reason)
-    status = 'computed' if plan is not None and baseline.state == 'declared' else 'not_computable'
-    if score_error is None and status == 'not_computable':
-        km.update(status=status, basket_id=context.basket_id,
-                  reason_code=baseline.reason_code, reason=baseline.reason)
+    status = "computed" if plan is not None and baseline.state == "declared" else "not_computable"
+    if score_error is None and status == "not_computable":
+        km.update(
+            status=status,
+            basket_id=context.basket_id,
+            reason_code=baseline.reason_code,
+            reason=baseline.reason,
+        )
     if plan is not None:
         _json(debug / "measurement_plan.json", plan.to_dict())
     _json(debug / "baseline.json", baseline.to_dict())
@@ -179,17 +199,36 @@ def run_package(
     finally:
         temporary_excel.unlink(missing_ok=True)
 
-    journal.set_llm(model=llm.config.model, structured_output=llm.structured_output,
-                    calls=llm.calls, repair_turns=llm.repair_turns,
-                    transport_retries=llm.transport_retries)
-    report = journal.report(basket_id=context.basket_id, status=status,
-                            km=_km_summary(km))
+    coverage = km.get("coverage", {})
+    if coverage.get("excluded_units", 0):
+        journal.warning(
+            "score_coverage_partial",
+            f"Оценены {coverage['scored_units']} из {coverage['total_units']} единиц; "
+            "проверьте исключения и знаменатель по методике.",
+        )
+    if km["reconciliation"]["status"] == "mismatch":
+        journal.warning(
+            "reconciliation_mismatch",
+            f"Официальная КМ {km['main_metric']['value']}, пересчёт "
+            f"{km['recomputed_value']}; проверьте версию корзины, методику и кеш. "
+            "Статус computed не является production-допуском.",
+        )
+
+    journal.set_llm(
+        model=llm.config.model,
+        structured_output=llm.structured_output,
+        calls=llm.calls,
+        repair_turns=llm.repair_turns,
+        transport_retries=llm.transport_retries,
+    )
+    report = journal.report(basket_id=context.basket_id, status=status, km=_km_summary(km))
     report["baseline"] = baseline.to_dict()
-    if status != 'computed':
-        report['reason_code'], report['reason'] = km['reason_code'], km['reason']
+    if status != "computed":
+        report["reason_code"], report["reason"] = km["reason_code"], km["reason"]
     _atomic_json(root / "run_report.json", report)
-    logger.info("Итог прогона: статус %s, строк UMR %d, файл %s",
-                status, len(published.frame), excel_name)
+    logger.info(
+        "Итог прогона: статус %s, строк UMR %d, файл %s", status, len(published.frame), excel_name
+    )
     return RunResult(
         status=status,
         umr=published,

@@ -1,8 +1,9 @@
 """Структурное чтение DOCX: заголовки, таблицы построчно, абзацы."""
+
 from __future__ import annotations
 
-
 from helpers import make_docx
+
 from laim_basket.reading.docx_reader import read_document_paragraphs
 
 
@@ -36,24 +37,32 @@ def test_txt_is_split_to_paragraphs(tmp_path):
 
 def test_attributed_table_alternate_prefix_nested_cell_and_fields(tmp_path):
     import zipfile
-    path = tmp_path / 'namespaced.docx'
-    xml = '''<x:document xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+
+    path = tmp_path / "namespaced.docx"
+    xml = """<x:document xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
     <x:body><x:p><x:pPr><x:pStyle x:val="2"/></x:pPr><x:r><x:t>До</x:t></x:r></x:p>
     <x:tbl x:rsidR="01"><x:tr x:rsidR="02"><x:tc><x:p><x:r><x:t>Accuracy</x:t></x:r></x:p></x:tc>
     <x:tc><x:p><x:r><x:instrText>HYPERLINK мусор</x:instrText><x:t>0.93</x:t></x:r></x:p>
     <x:tbl><x:tr><x:tc><x:p><x:r><x:t>nested</x:t></x:r></x:p></x:tc></x:tr></x:tbl></x:tc>
-    </x:tr></x:tbl><x:p><x:r><x:t>После</x:t></x:r></x:p></x:body></x:document>'''
-    with zipfile.ZipFile(path, 'w') as z:
-        z.writestr('word/document.xml', xml)
-    assert read_document_paragraphs(path, 'document_docx') == ('## До', 'Accuracy | 0.93 nested', 'После')
+    </x:tr></x:tbl><x:p><x:r><x:t>После</x:t></x:r></x:p></x:body></x:document>"""
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", xml)
+    assert read_document_paragraphs(path, "document_docx") == (
+        "## До",
+        "Accuracy | 0.93 nested",
+        "После",
+    )
 
 
 def test_malformed_docx_is_structured_read_error(tmp_path):
     import zipfile
+
     import pytest
+
     from laim_basket.errors import ReadError
-    path = tmp_path / 'broken.docx'
-    with zipfile.ZipFile(path, 'w') as z:
-        z.writestr('word/document.xml', '<w:document>')
+
+    path = tmp_path / "broken.docx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", "<w:document>")
     with pytest.raises(ReadError):
-        read_document_paragraphs(path, 'document_docx')
+        read_document_paragraphs(path, "document_docx")

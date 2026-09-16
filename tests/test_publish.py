@@ -9,17 +9,16 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+from conftest import layout_proposal as _proposal
+from conftest import source as _source
 
 from laim_basket.errors import NotEvaluableError
 from laim_basket.models import MeasurementPlan
-from laim_basket.resolve import resolve_layout
 from laim_basket.publish import DIALOGUE_SHEET, FLAT_SHEET, metric_slug, publish_umr
 from laim_basket.reading.xlsx_reader import read_workbook
+from laim_basket.resolve import resolve_layout
 from laim_basket.transform.canon import build_canon
 from laim_basket.transform.grouping import apply_grouping
-
-from conftest import layout_proposal as _proposal
-from conftest import source as _source
 
 
 def _materialize(tmp_path: Path, header: list[str], rows: list[list[object]], proposal: dict):
@@ -40,10 +39,20 @@ def _materialize(tmp_path: Path, header: list[str], rows: list[list[object]], pr
 
 def _plan(mode: str, sources: list[dict], reducer: str = "mean") -> MeasurementPlan:
     return MeasurementPlan(
-        basket_id="CI1", metric_name="quality", assessment_mode=mode, method="identity", sources=tuple(sources),
-        missing_policy="fail", majority_denominator=None, reducer=reducer,
-        threshold=None, comparator=None, scale="ratio", precision=3,
-        reported_value=None, reported_raw=None,
+        basket_id="CI1",
+        metric_name="quality",
+        assessment_mode=mode,
+        method="identity",
+        sources=tuple(sources),
+        missing_policy="fail",
+        majority_denominator=None,
+        reducer=reducer,
+        threshold=None,
+        comparator=None,
+        scale="ratio",
+        precision=3,
+        reported_value=None,
+        reported_raw=None,
         evidence={"metric": ("doc-1:p0001",)},
     )
 
@@ -70,13 +79,21 @@ def test_flat_projection_publishes_only_spec_columns(tmp_path):
         ["кредит", "q1", "a1", "r1", "да", "ivanov", 2, "ok"],
         ["вклад", "q2", "a2", "r2", "нет", "petrov", 1, None],
     ]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal({
-        "scenario": "A",
-        "input_query": "B",
-        "output_answer": "C",
-        "reference_answers": ["D"],
-        "assessor_id": "F",
-    }, weight="G"))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {
+                "scenario": "A",
+                "input_query": "B",
+                "output_answer": "C",
+                "reference_answers": ["D"],
+                "assessor_id": "F",
+            },
+            weight="G",
+        ),
+    )
     frame["main_metric"] = [1.0, 0.0]
     plan = _plan("qa", [_source("E", "final_score", {"да": 1, "нет": 0})])
 
@@ -85,15 +102,27 @@ def test_flat_projection_publishes_only_spec_columns(tmp_path):
     assert published.variant == "flat"
     assert published.sheet_name == FLAT_SHEET
     assert list(published.frame.columns) == [
-        "scenario", "query_id", "input_query_count", "input_query", "output_answer",
-        "reference_answer", "оценка_metric", "main_metric", "assessor_id",
+        "scenario",
+        "query_id",
+        "input_query_count",
+        "input_query",
+        "output_answer",
+        "reference_answer",
+        "оценка_metric",
+        "main_metric",
+        "assessor_id",
     ]
     assert published.frame["оценка_metric"].tolist() == [1.0, 0.0]
     assert published.frame["input_query_count"].tolist() == [2, 1]
     assert published.frame["query_id"].tolist() == ["row-0", "row-1"]
     assert published.published_columns == {
-        "A": "scenario", "B": "input_query", "C": "output_answer", "D": "reference_answer",
-        "E": "оценка_metric", "F": "assessor_id", "G": "input_query_count",
+        "A": "scenario",
+        "B": "input_query",
+        "C": "output_answer",
+        "D": "reference_answer",
+        "E": "оценка_metric",
+        "F": "assessor_id",
+        "G": "input_query_count",
     }
 
 
@@ -101,11 +130,18 @@ def test_multiple_references_numbered_from_one(tmp_path):
     # Спецификация: несколько эталонов — reference_answer_1, reference_answer_2, …
     header = ["Вопрос", "Ответ", "Эталон", "Альтернатива", "Оценка"]
     rows = [["q1", "a1", "r1", "r1b", 1], ["q2", "a2", "r2", None, 0]]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal({
-        "input_query": "A",
-        "output_answer": "B",
-        "reference_answers": ["C", "D"],
-    }))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {
+                "input_query": "A",
+                "output_answer": "B",
+                "reference_answers": ["C", "D"],
+            }
+        ),
+    )
     plan = _plan("qa", [_source("E", "final_score")])
     frame["main_metric"] = [1.0, 0.0]
 
@@ -121,11 +157,18 @@ def test_multiple_references_numbered_from_one(tmp_path):
 def test_single_reference_keeps_bare_name(tmp_path):
     header = ["Вопрос", "Ответ", "Эталон", "Оценка"]
     rows = [["q1", "a1", "r1", 1]]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal({
-        "input_query": "A",
-        "output_answer": "B",
-        "reference_answers": ["C"],
-    }))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {
+                "input_query": "A",
+                "output_answer": "B",
+                "reference_answers": ["C"],
+            }
+        ),
+    )
     plan = _plan("qa", [_source("D", "final_score")])
     frame["main_metric"] = [1.0]
 
@@ -146,17 +189,26 @@ _SPEC_COLUMN = re.compile(
 
 
 def test_published_columns_stay_within_spec_vocabulary(tmp_path):
-    header = ["Тема", "Вопрос", "Ответ", "Эталон", "Альтернатива", "Оценка",
-              "Эксперт", "freq"]
-    rows = [["кредит", "q1", "a1", "r1", "r1b", 1, "ivanov", 2],
-            ["вклад", "q2", "a2", "r2", None, 0, "petrov", 1]]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal({
-        "scenario": "A",
-        "input_query": "B",
-        "output_answer": "C",
-        "reference_answers": ["D", "E"],
-        "assessor_id": "G",
-    }, weight="H"))
+    header = ["Тема", "Вопрос", "Ответ", "Эталон", "Альтернатива", "Оценка", "Эксперт", "freq"]
+    rows = [
+        ["кредит", "q1", "a1", "r1", "r1b", 1, "ivanov", 2],
+        ["вклад", "q2", "a2", "r2", None, 0, "petrov", 1],
+    ]
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {
+                "scenario": "A",
+                "input_query": "B",
+                "output_answer": "C",
+                "reference_answers": ["D", "E"],
+                "assessor_id": "G",
+            },
+            weight="H",
+        ),
+    )
     plan = _plan("qa", [_source("F", "final_score")])
     frame["main_metric"] = [1.0, 0.0]
 
@@ -167,23 +219,41 @@ def test_published_columns_stay_within_spec_vocabulary(tmp_path):
 
 
 def test_flat_projection_without_plan_has_no_metric_columns(tmp_path):
-    layout, frame = _materialize(tmp_path, ["Q", "A", "S"], [["q1", "a1", 1]], _proposal({
-        "input_query": "A", "output_answer": "B",
-    }))
+    layout, frame = _materialize(
+        tmp_path,
+        ["Q", "A", "S"],
+        [["q1", "a1", 1]],
+        _proposal(
+            {
+                "input_query": "A",
+                "output_answer": "B",
+            }
+        ),
+    )
 
     published = publish_umr(frame, layout, None)
 
-    assert list(published.frame.columns) == ["query_id", "input_query_count", "input_query", "output_answer"]
+    assert list(published.frame.columns) == [
+        "query_id",
+        "input_query_count",
+        "input_query",
+        "output_answer",
+    ]
     assert published.published_columns == {"A": "input_query", "B": "output_answer"}
 
 
 def test_turn_level_groups_publish_session_id_from_grouping_column(tmp_path):
     header = ["conversation_id", "Q", "A", "score"]
     rows = [["conv-1", "q1", "a1", 1], [None, "q2", "a2", 0], ["conv-2", "q3", "a3", 1]]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal(
-        {"input_query": "B", "output_answer": "C"},
-        grouping={"kind": "column", "column": "A"},
-    ))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {"input_query": "B", "output_answer": "C"},
+            grouping={"kind": "column", "column": "A"},
+        ),
+    )
     frame["main_metric"] = [1.0, 0.0, 1.0]
     plan = _plan("turn_with_history", [_source("D", "final_score")])
 
@@ -202,15 +272,20 @@ def test_query_id_is_scoped_by_session_and_preserved(tmp_path):
         ["s1", "q1", "q1", "a1", 1],
         ["s2", "q1", "q2", "a2", 1],
     ]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal(
-        {
-            "session_id": "A",
-            "query_id": "B",
-            "input_query": "C",
-            "output_answer": "D",
-        },
-        grouping={"kind": "column", "column": "A"},
-    ))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {
+                "session_id": "A",
+                "query_id": "B",
+                "input_query": "C",
+                "output_answer": "D",
+            },
+            grouping={"kind": "column", "column": "A"},
+        ),
+    )
     frame["main_metric"] = [1.0, 1.0]
 
     published = publish_umr(frame, layout, _plan("qa", [_source("E", "final_score")]))
@@ -290,13 +365,20 @@ def test_dialogue_projection_packs_turns_and_keeps_session_columns(tmp_path):
         [None, "вклад", "q2", "a2", 1, 1, "ivanov"],
         ["d2", "кредит", "q3", "a3", 0, 1, "petrov"],
     ]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal(
-        {
-            "scenario": "B", "input_query": "C",
-            "output_answer": "D", "assessor_id": "G",
-        },
-        grouping={"kind": "column", "column": "A"},
-    ))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {
+                "scenario": "B",
+                "input_query": "C",
+                "output_answer": "D",
+                "assessor_id": "G",
+            },
+            grouping={"kind": "column", "column": "A"},
+        ),
+    )
     frame["main_metric"] = [1.0, 1.0, 0.0]
     plan = _plan("dialogue", [_source("E", "assessor_vote"), _source("F", "assessor_vote")])
 
@@ -305,13 +387,19 @@ def test_dialogue_projection_packs_turns_and_keeps_session_columns(tmp_path):
     assert published.variant == "dialogue"
     assert published.sheet_name == DIALOGUE_SHEET
     assert list(published.frame.columns) == [
-        "scenario", "session_id", "dialogue", "mark1_metric", "mark2_metric",
-        "main_metric", "assessor_id",
+        "scenario",
+        "session_id",
+        "dialogue",
+        "mark1_metric",
+        "mark2_metric",
+        "main_metric",
+        "assessor_id",
     ]
     assert published.frame["session_id"].tolist() == ["d1", "d2"]
     assert published.frame["scenario"].tolist() == ["вклад", "кредит"]
     assert ast.literal_eval(published.frame["dialogue"].iloc[0]) == [
-        ("row-0", "q1", "a1"), ("row-1", "q2", "a2"),
+        ("row-0", "q1", "a1"),
+        ("row-1", "q2", "a2"),
     ]
     assert published.frame["mark1_metric"].tolist() == [1.0, 0.0]
     assert published.frame["main_metric"].tolist() == [1.0, 0.0]
@@ -322,17 +410,27 @@ def test_dialogue_projection_packs_turns_and_keeps_session_columns(tmp_path):
 def test_weighted_dialogue_publishes_weight_column(tmp_path):
     header = ["D", "Q", "A", "score", "freq"]
     rows = [["d1", "q1", "a1", 1, 3], [None, "q2", "a2", None, 3], ["d2", "q3", "a3", 0, 1]]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal(
-        {"input_query": "B", "output_answer": "C"},
-        grouping={"kind": "column", "column": "A"}, weight="E",
-    ))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {"input_query": "B", "output_answer": "C"},
+            grouping={"kind": "column", "column": "A"},
+            weight="E",
+        ),
+    )
     frame["main_metric"] = [1.0, 1.0, 0.0]
     plan = _plan("dialogue", [_source("D", "final_score")], reducer="frequency_weighted_mean")
 
     published = publish_umr(frame, layout, plan)
 
     assert list(published.frame.columns) == [
-        "session_id", "dialogue", "input_query_count", "score_metric", "main_metric",
+        "session_id",
+        "dialogue",
+        "input_query_count",
+        "score_metric",
+        "main_metric",
     ]
     assert published.frame["input_query_count"].tolist() == [3, 1]
 
@@ -340,10 +438,16 @@ def test_weighted_dialogue_publishes_weight_column(tmp_path):
 def test_unweighted_dialogue_omits_weight_column(tmp_path):
     header = ["D", "Q", "A", "score", "freq"]
     rows = [["d1", "q1", "a1", 1, 3], ["d2", "q3", "a3", 0, 1]]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal(
-        {"input_query": "B", "output_answer": "C"},
-        grouping={"kind": "column", "column": "A"}, weight="E",
-    ))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {"input_query": "B", "output_answer": "C"},
+            grouping={"kind": "column", "column": "A"},
+            weight="E",
+        ),
+    )
     frame["main_metric"] = [1.0, 0.0]
 
     published = publish_umr(frame, layout, _plan("dialogue", [_source("D", "final_score")]))
@@ -354,10 +458,15 @@ def test_unweighted_dialogue_omits_weight_column(tmp_path):
 def test_dialogue_projection_drops_session_columns_that_vary_inside_dialogue(tmp_path):
     header = ["D", "Тема", "Q", "A", "score"]
     rows = [["d1", "вклад", "q1", "a1", 1], ["d1", "кредит", "q2", "a2", 1]]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal(
-        {"scenario": "B", "input_query": "C", "output_answer": "D"},
-        grouping={"kind": "column", "column": "A"},
-    ))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {"scenario": "B", "input_query": "C", "output_answer": "D"},
+            grouping={"kind": "column", "column": "A"},
+        ),
+    )
     frame["main_metric"] = [1.0, 1.0]
 
     published = publish_umr(frame, layout, _plan("dialogue", [_source("E", "final_score")]))
@@ -380,10 +489,16 @@ def test_dialogue_with_merged_rows_synthesizes_integer_session_id(tmp_path):
     sheet.merge_cells("C2:C3")
     workbook.save(path)
     sheets = read_workbook(path)
-    layout = resolve_layout(_proposal(
-        {"input_query": "A", "output_answer": "B"},
-        grouping={"kind": "merged_rows", "column": None},
-    ), sheets, "CI1", "", frozenset())
+    layout = resolve_layout(
+        _proposal(
+            {"input_query": "A", "output_answer": "B"},
+            grouping={"kind": "merged_rows", "column": "B"},
+        ),
+        sheets,
+        "CI1",
+        "",
+        frozenset(),
+    )
     grouped = apply_grouping(sheets["Sheet"], layout.region, layout.transform_config())
     frame, _ = build_canon(grouped, layout.region, layout.transform_config())
     frame["main_metric"] = [1.0, 1.0, 0.0]
@@ -391,15 +506,26 @@ def test_dialogue_with_merged_rows_synthesizes_integer_session_id(tmp_path):
     published = publish_umr(frame, layout, _plan("dialogue", [_source("C", "final_score")]))
 
     assert published.frame["session_id"].tolist() == [1, 2]
-    assert ast.literal_eval(published.frame["dialogue"].iloc[0]) == [("row-0", "q1", "a1"), ("row-1", "q2", "a1")]
+    assert ast.literal_eval(published.frame["dialogue"].iloc[0]) == [
+        ("row-0", "q1", "a1"),
+        ("row-1", "q2", "a1"),
+    ]
 
 
 def test_accuracy_sources_get_own_module_columns(tmp_path):
     header = ["request", "class", "GT"]
-    layout, frame = _materialize(tmp_path, header, [["q1", "a", "a"]], _proposal({
-        "input_query": "A", "output_answer": "B",
-        "reference_answers": ["C"],
-    }))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        [["q1", "a", "a"]],
+        _proposal(
+            {
+                "input_query": "A",
+                "output_answer": "B",
+                "reference_answers": ["C"],
+            }
+        ),
+    )
     frame["main_metric"] = [1.0]
     plan = _plan("qa", [_source("B", "prediction", "label"), _source("C", "target", "label")])
 
@@ -408,11 +534,19 @@ def test_accuracy_sources_get_own_module_columns(tmp_path):
     # Монитор поставляет предсказание отдельным полем, поэтому источники accuracy
     # получают собственные имена даже на колонках ответа и эталона.
     assert published.published_columns == {
-        "A": "input_query", "B": "class_output_answer", "C": "gt_reference_answer",
+        "A": "input_query",
+        "B": "class_output_answer",
+        "C": "gt_reference_answer",
     }
     assert list(published.frame.columns) == [
-        "query_id", "input_query_count", "input_query", "output_answer",
-        "class_output_answer", "reference_answer", "gt_reference_answer", "main_metric",
+        "query_id",
+        "input_query_count",
+        "input_query",
+        "output_answer",
+        "class_output_answer",
+        "reference_answer",
+        "gt_reference_answer",
+        "main_metric",
     ]
     assert published.frame["class_output_answer"].tolist() == ["a"]
     assert published.frame["gt_reference_answer"].tolist() == ["a"]
@@ -421,10 +555,15 @@ def test_accuracy_sources_get_own_module_columns(tmp_path):
 def test_dialogue_publishes_label_sources_named_in_the_contract(tmp_path):
     header = ["D", "Q", "A", "route", "gold"]
     rows = [["d1", "q1", "a1", "picker", "picker"], ["d1", "q2", "a2", "picker", "picker"]]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal(
-        {"input_query": "B", "output_answer": "C"},
-        grouping={"kind": "column", "column": "A"},
-    ))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {"input_query": "B", "output_answer": "C"},
+            grouping={"kind": "column", "column": "A"},
+        ),
+    )
     frame["main_metric"] = [1.0, 1.0]
     plan = _plan("dialogue", [_source("D", "prediction", "label"), _source("E", "target", "label")])
 
@@ -432,7 +571,10 @@ def test_dialogue_publishes_label_sources_named_in_the_contract(tmp_path):
 
     assert published.variant == "dialogue"
     assert list(published.frame.columns) == [
-        "session_id", "dialogue", "route_output_answer", "gold_reference_answer",
+        "session_id",
+        "dialogue",
+        "route_output_answer",
+        "gold_reference_answer",
         "main_metric",
     ]
     assert published.frame["route_output_answer"].tolist() == ["picker"]
@@ -444,8 +586,14 @@ def test_dialogue_publishes_label_sources_named_in_the_contract(tmp_path):
         (
             "qa",
             [
-                "solution_version", "session_id", "query_id", "input_query_count",
-                "input_query", "output_answer", "score_metric", "main_metric",
+                "solution_version",
+                "session_id",
+                "query_id",
+                "input_query_count",
+                "input_query",
+                "output_answer",
+                "score_metric",
+                "main_metric",
             ],
             ["D-01.002.03", "D-01.002.03"],
         ),
@@ -464,10 +612,15 @@ def test_solution_version_is_preserved_in_each_output_format(
         ["D-01.002.03", "d1", "q1", "a1", 1],
         ["D-01.002.03", "d1", "q2", "a2", 1],
     ]
-    layout, frame = _materialize(tmp_path, header, rows, _proposal(
-        {"input_query": "C", "output_answer": "D"},
-        grouping={"kind": "column", "column": "B"},
-    ))
+    layout, frame = _materialize(
+        tmp_path,
+        header,
+        rows,
+        _proposal(
+            {"input_query": "C", "output_answer": "D"},
+            grouping={"kind": "column", "column": "B"},
+        ),
+    )
     frame["main_metric"] = [1.0, 1.0]
 
     published = publish_umr(frame, layout, _plan(mode, [_source("E", "final_score")]))
@@ -478,10 +631,18 @@ def test_solution_version_is_preserved_in_each_output_format(
 
 
 def test_source_on_a_role_column_is_rejected(tmp_path):
-    layout, frame = _materialize(tmp_path, ["Q", "A", "Тема"], [["q1", "a1", "x"]], _proposal({
-        "input_query": "A", "output_answer": "B",
-        "scenario": "C",
-    }))
+    layout, frame = _materialize(
+        tmp_path,
+        ["Q", "A", "Тема"],
+        [["q1", "a1", "x"]],
+        _proposal(
+            {
+                "input_query": "A",
+                "output_answer": "B",
+                "scenario": "C",
+            }
+        ),
+    )
     frame["main_metric"] = [1.0]
     with pytest.raises(NotEvaluableError) as excinfo:
         publish_umr(frame, layout, _plan("qa", [_source("C", "final_score")]))
@@ -489,29 +650,57 @@ def test_source_on_a_role_column_is_rejected(tmp_path):
 
 
 def test_colliding_metric_names_are_rejected(tmp_path):
-    layout, frame = _materialize(tmp_path, ["Q", "A", "mark 1", "mark_1"], [["q1", "a1", 1, 1]], _proposal({
-        "input_query": "A", "output_answer": "B",
-    }))
+    layout, frame = _materialize(
+        tmp_path,
+        ["Q", "A", "mark 1", "mark_1"],
+        [["q1", "a1", 1, 1]],
+        _proposal(
+            {
+                "input_query": "A",
+                "output_answer": "B",
+            }
+        ),
+    )
     frame["main_metric"] = [1.0]
     with pytest.raises(NotEvaluableError):
-        publish_umr(frame, layout, _plan("qa", [_source("C", "criterion"), _source("D", "criterion")]))
+        publish_umr(
+            frame, layout, _plan("qa", [_source("C", "criterion"), _source("D", "criterion")])
+        )
 
 
 def test_value_map_criterion_is_published_as_number(tmp_path):
-    layout, frame = _materialize(tmp_path, ["Q", "A", "verdict"], [["q1", "a1", "да"], ["q2", "a2", "нет"]], _proposal({
-        "input_query": "A", "output_answer": "B",
-    }))
+    layout, frame = _materialize(
+        tmp_path,
+        ["Q", "A", "verdict"],
+        [["q1", "a1", "да"], ["q2", "a2", "нет"]],
+        _proposal(
+            {
+                "input_query": "A",
+                "output_answer": "B",
+            }
+        ),
+    )
     frame["main_metric"] = [1.0, 0.0]
 
-    published = publish_umr(frame, layout, _plan("qa", [_source("C", "final_score", {"да": 1, "нет": 0})]))
+    published = publish_umr(
+        frame, layout, _plan("qa", [_source("C", "final_score", {"да": 1, "нет": 0})])
+    )
 
     assert published.frame["verdict_metric"].tolist() == [1.0, 0.0]
 
 
 def test_published_metric_values_are_normalized_numbers(tmp_path):
-    layout, frame = _materialize(tmp_path, ["Q", "A", "score"], [["q1", "a1", "50%"], ["q2", "a2", "0,75"]], _proposal({
-        "input_query": "A", "output_answer": "B",
-    }))
+    layout, frame = _materialize(
+        tmp_path,
+        ["Q", "A", "score"],
+        [["q1", "a1", "50%"], ["q2", "a2", "0,75"]],
+        _proposal(
+            {
+                "input_query": "A",
+                "output_answer": "B",
+            }
+        ),
+    )
     frame["main_metric"] = [0.5, 0.75]
     published = publish_umr(frame, layout, _plan("qa", [_source("C", "final_score")]))
     assert published.frame["score_metric"].tolist() == [0.5, 0.75]

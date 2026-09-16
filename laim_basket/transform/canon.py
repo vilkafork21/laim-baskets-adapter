@@ -70,7 +70,9 @@ def build_canon(
         data["input_query"] = [_text(value) for value in _column(grouped, "__blob_input_query")]
         data["output_answer"] = [_text(value) for value in _column(grouped, "__blob_output_answer")]
     else:
-        data["input_query"] = [_text(value) for value in _column(grouped, roles["input_query"]["source"])]
+        data["input_query"] = [
+            _text(value) for value in _column(grouped, roles["input_query"]["source"])
+        ]
         output = roles.get("output_answer")
         if isinstance(output, dict) and "coalesce" in output:
             candidates = [
@@ -84,7 +86,8 @@ def build_canon(
         else:
             data["output_answer"] = (
                 [_text(value) for value in _column(grouped, output["source"])]
-                if output else [None] * len(grouped.rows)
+                if output
+                else [None] * len(grouped.rows)
             )
     scenario = roles.get("scenario")
     if isinstance(scenario, dict) and "source" in scenario:

@@ -126,14 +126,17 @@ def published_names(layout: ResolvedLayout, plan: MeasurementPlan | None) -> lis
         elif column_id in roles:
             raise NotEvaluableError(
                 "Источник КМ занят канонической ролью и не может быть метрикой",
-                column_id=column_id, role=role, canonical_role=roles[column_id],
+                column_id=column_id,
+                role=role,
+                canonical_role=roles[column_id],
             )
         else:
             name = metric_slug(header)
         if name in published or name == "main_metric":
             raise NotEvaluableError(
                 "Имя колонки источника КМ конфликтует с другой опубликованной колонкой",
-                column_id=column_id, column_name=name,
+                column_id=column_id,
+                column_name=name,
             )
         published.add(name)
         result.append((column_id, name))
@@ -173,10 +176,7 @@ def _session_values(frame: pd.DataFrame, layout: ResolvedLayout) -> list[object]
     for group, value in zip(groups, raw):
         if group not in first_value and not blank(value):
             first_value[group] = value
-    return [
-        first_value[group] if group in first_value else int(group) + 1
-        for group in groups
-    ]
+    return [first_value[group] if group in first_value else int(group) + 1 for group in groups]
 
 
 def _spec_columns(names: list[tuple[str, str]]) -> list[str]:
@@ -190,7 +190,9 @@ def _spec_columns(names: list[tuple[str, str]]) -> list[str]:
     return [*_HEAD, *middle, *_TAIL]
 
 
-def _flat(frame: pd.DataFrame, layout: ResolvedLayout, names: list[tuple[str, str]]) -> pd.DataFrame:
+def _flat(
+    frame: pd.DataFrame, layout: ResolvedLayout, names: list[tuple[str, str]]
+) -> pd.DataFrame:
     result = frame.copy()
     if "reference_group_id" in result or isinstance(layout.roles.get("session_id"), dict):
         result["session_id"] = _session_values(result, layout)
@@ -204,16 +206,20 @@ def _dialogue_turns(frame: pd.DataFrame, positions: list[int]) -> str:
     turns = []
     for position in ordered:
         query, answer = frame["input_query"].iloc[position], frame["output_answer"].iloc[position]
-        turns.append((
-            str(frame["query_id"].iloc[position]),
-            "" if blank(query) else str(query),
-            "" if blank(answer) else str(answer),
-        ))
+        turns.append(
+            (
+                str(frame["query_id"].iloc[position]),
+                "" if blank(query) else str(query),
+                "" if blank(answer) else str(answer),
+            )
+        )
     return repr(turns)
 
 
 def _dialogue(
-    frame: pd.DataFrame, layout: ResolvedLayout, names: list[tuple[str, str]],
+    frame: pd.DataFrame,
+    layout: ResolvedLayout,
+    names: list[tuple[str, str]],
     weighted: bool,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Одна строка на сессию; сессионная колонка, меняющаяся внутри диалога, опускается."""
@@ -226,8 +232,7 @@ def _dialogue(
         () if weighted else ("input_query_count",)
     )
     session_columns = [
-        name for name in _spec_columns(names)
-        if name in session and name not in turn_columns
+        name for name in _spec_columns(names) if name in session and name not in turn_columns
     ]
     positions: dict[object, list[int]] = {}
     for position, group in enumerate(session["reference_group_id"].tolist()):
@@ -244,16 +249,16 @@ def _dialogue(
             record[name] = present[0] if present else None
         records.append(record)
     head = [
-        name
-        for name in session_columns
-        if name in ("solution_version", "scenario", "session_id")
+        name for name in session_columns if name in ("solution_version", "scenario", "session_id")
     ]
     order = [*head, "dialogue", *[name for name in session_columns if name not in head]]
     result = pd.DataFrame(records, dtype=object)
     return result[[name for name in order if name not in dropped]], sorted(dropped)
 
 
-def publish_umr(frame: pd.DataFrame, layout: ResolvedLayout, plan: MeasurementPlan | None) -> PublishedUmr:
+def publish_umr(
+    frame: pd.DataFrame, layout: ResolvedLayout, plan: MeasurementPlan | None
+) -> PublishedUmr:
     """Спроецировать внутренний канон (с сырыми колонками) в лист спецификации."""
     names = published_names(layout, plan)
     # Источник КМ добавляется после роли того же column_id, поэтому в карте
@@ -267,7 +272,8 @@ def publish_umr(frame: pd.DataFrame, layout: ResolvedLayout, plan: MeasurementPl
     if plan is not None and plan.assessment_mode == "dialogue":
         variant, sheet_name = "dialogue", DIALOGUE_SHEET
         published, dropped = _dialogue(
-            source, layout, names, plan.reducer == "frequency_weighted_mean")
+            source, layout, names, plan.reducer == "frequency_weighted_mean"
+        )
     else:
         variant, sheet_name = "flat", FLAT_SHEET
         published = _flat(source, layout, names)

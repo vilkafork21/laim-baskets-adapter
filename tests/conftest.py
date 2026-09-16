@@ -7,11 +7,14 @@ NODE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE_ROOT))
 
 
-def source(column_id: str, role: str, normalization: object = "numeric",
-           polarity: str = "direct") -> dict:
+def source(
+    column_id: str, role: str, normalization: object = "numeric", polarity: str = "direct"
+) -> dict:
     return {
-        "column_id": column_id, "role": role,
-        "normalization": normalization, "polarity": polarity,
+        "column_id": column_id,
+        "role": role,
+        "normalization": normalization,
+        "polarity": polarity,
     }
 
 
@@ -21,9 +24,15 @@ def layout_answer(**overrides) -> dict:
         "quotes": {},
         "sheet_name": "Лист1",
         "header_rows": [1],
-        "roles": {"query_id": None, "session_id": None, "input_query": "A",
-                   "output_answer": "B", "scenario": None,
-                   "assessor_id": None, "reference_answers": []},
+        "roles": {
+            "query_id": None,
+            "session_id": None,
+            "input_query": "A",
+            "output_answer": "B",
+            "scenario": None,
+            "assessor_id": None,
+            "reference_answers": [],
+        },
         "grouping": {"kind": "none", "column": None},
         "dialogue_blob": None,
         "weight_column": None,
@@ -48,9 +57,15 @@ def metric_answer(**overrides) -> dict:
     return answer
 
 
-def layout_proposal(roles: dict, grouping=None, dialogue_blob=None, weight=None,
-                    *, sheet_name: str = "Sheet",
-                    header_rows: tuple[int, ...] = (1,)) -> dict:
+def layout_proposal(
+    roles: dict,
+    grouping=None,
+    dialogue_blob=None,
+    weight=None,
+    *,
+    sheet_name: str = "Sheet",
+    header_rows: tuple[int, ...] = (1,),
+) -> dict:
     if isinstance(dialogue_blob, dict):
         dialogue_blob = dict(dialogue_blob)
     return {
@@ -58,8 +73,12 @@ def layout_proposal(roles: dict, grouping=None, dialogue_blob=None, weight=None,
         "sheet_name": sheet_name,
         "header_rows": list(header_rows),
         "roles": {
-            "query_id": None, "session_id": None, "scenario": None,
-            "assessor_id": None, "reference_answers": [], **roles,
+            "query_id": None,
+            "session_id": None,
+            "scenario": None,
+            "assessor_id": None,
+            "reference_answers": [],
+            **roles,
         },
         "grouping": grouping or {"kind": "none", "column": None},
         "dialogue_blob": dialogue_blob,
@@ -69,7 +88,13 @@ def layout_proposal(roles: dict, grouping=None, dialogue_blob=None, weight=None,
 
 def baseline_answer(raw="0.5", paragraph="p002", **overrides):
     """Ответ K: номер строки соответствует make_package с заголовком."""
-    candidate = dict(metric_name="Accuracy", raw=raw, paragraph=paragraph,
-                     kind="value", slice_label=None, is_key_metric=True)
+    candidate = dict(
+        metric_name="Accuracy",
+        raw=raw,
+        paragraph=paragraph,
+        kind="value",
+        slice_label=None,
+        is_key_metric=True,
+    )
     candidate.update(overrides)
     return [candidate]
