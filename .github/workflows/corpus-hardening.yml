@@ -1,0 +1,184 @@
+name: corpus hardening v2
+on:
+  push:
+    branches: [chore/package-verified-7060674]
+    paths: [.github/workflows/corpus-hardening.yml]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_SHA: c5079f2b8589174d7164b91ea10932fe48f24280
+      EXPECTED_TREE: 48684319597af0c10b432c23b699eb532a879c32
+      PATCH_SHA256: 40bc2f95c18cdd124ee95162fbb1cdf8fcd4c7c9db5a648bf0a145f016281bec
+      TARGET_BRANCH: fix/corpus-hardening-20260916
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: c5079f2b8589174d7164b91ea10932fe48f24280
+          path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Зависимости и чистая база
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release/reports"
+          echo "RELEASE_DIR=$RUNNER_TEMP/release" >> "$GITHUB_ENV"
+          echo "VERIFY_DIR=$RUNNER_TEMP/node-unpacked" >> "$GITHUB_ENV"
+          python -m pip install -r source/requirements.txt pytest 'ruff==0.15.5'
+          python -VV | tee "$RUNNER_TEMP/release/reports/python.txt"
+          python -m pip freeze > "$RUNNER_TEMP/release/reports/requirements-tested.txt"
+          python -m pip check | tee "$RUNNER_TEMP/release/reports/pip-check.txt"
+      - name: Восстановить точный проверяемый снимок без приватного корпуса
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, lzma, os
+          from pathlib import Path
+          payload = ''.join(Path(f'control/.github/review/corpus-hardening.part{i}.b64').read_text().strip() for i in (1, 2, 3))
+          patch = lzma.decompress(base64.b64decode(payload, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == os.environ['PATCH_SHA256'], 'Повреждён пакет правок'
+          Path(os.environ['RUNNER_TEMP'], 'hardening.patch').write_bytes(patch)
+          Path('source/ruff.toml').write_text('target-version = "py312"\nline-length = 100\n\n[lint]\nselect = ["E4", "E7", "E9", "F", "I"]\n')
+          PY
+          cd source
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          ruff check --fix .
+          ruff format .
+          git apply --check "$RUNNER_TEMP/hardening.patch"
+          git apply "$RUNNER_TEMP/hardening.patch"
+          git add -A
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --cached --binary > "$RELEASE_DIR/reports/changes-from-c5079f2.patch"
+          git diff --cached --stat > "$RELEASE_DIR/reports/changes-stat.txt"
+      - name: Проверить исходники на Python 3.12
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check . | tee "$RELEASE_DIR/reports/ruff.txt"
+          ruff format --check . | tee "$RELEASE_DIR/reports/format.txt"
+          python -m compileall -q main.py laim_basket tools
+          python -m pytest -q -ra --junitxml="$RELEASE_DIR/reports/pytest-source.xml" | tee "$RELEASE_DIR/reports/pytest-source.txt"
+      - name: Зафиксировать код и собрать архивы
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Упростить адаптер и закрепить корректность расчёта' -m 'Независимые L/S/K, явная единица оценки и шкала, безопасная группировка, полный baseline-контекст, диагностика пропусков и сверки. Сохранены четыре входа, настройки, зависимости и контракты v2/v1. Добавлены синтетические регрессии и инструменты приватной проверки корпуса. Живые LLM-прогоны и Sber DS не выполнялись; это кандидат на приёмку, не production-допуск.'
+          echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git log -1 --format=fuller > "$RELEASE_DIR/reports/source-commit.txt"
+          git archive --format=zip --output="$RELEASE_DIR/laim-baskets-adapter-corpus-v2-source.zip" HEAD
+          python - <<'PY'
+          import ast, hashlib, json, os, subprocess, zipfile
+          from pathlib import Path, PurePosixPath
+          root, release, verify = Path.cwd(), Path(os.environ['RELEASE_DIR']), Path(os.environ['VERIFY_DIR'])
+          desc = json.loads(Path('descriptor.json').read_text())
+          cfg = desc['script']['runConfiguration']
+          sources = cfg['sourceFiles']
+          expected = {'main.py'} | {p.as_posix() for p in Path('laim_basket').rglob('*.py')}
+          assert len(sources) == len(set(sources)) == 38 and set(sources) == expected
+          assert len([p for p in desc['ports'] if p['in']]) == 4
+          assert Path('requirements.txt').read_bytes() == subprocess.check_output(['git','show',os.environ['BASE_SHA']+':requirements.txt'])
+          files = sorted(set(sources + cfg['libraryDependencies'] + ['descriptor.json','README.md','docs/architecture.md','docs/acceptance.md']))
+          hashes = {}
+          for name in files:
+              safe = PurePosixPath(name)
+              assert not safe.is_absolute() and '..' not in safe.parts
+              path = Path(name)
+              assert path.is_file() and not path.is_symlink()
+              data = path.read_bytes()
+              assert data == subprocess.check_output(['git','show','HEAD:'+name])
+              hashes[name] = hashlib.sha256(data).hexdigest()
+              if name.endswith('.py'): ast.parse(data, filename=name, feature_version=(3,12))
+          archive = release / 'laim-baskets-adapter-corpus-v2-node.zip'
+          with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as out:
+              for name in files:
+                  info = zipfile.ZipInfo(name,(2026,9,16,0,0,0))
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  info.external_attr = 0o100644 << 16
+                  out.writestr(info,Path(name).read_bytes())
+          verify.mkdir()
+          with zipfile.ZipFile(archive) as inp:
+              assert inp.testzip() is None and set(inp.namelist()) == set(files)
+              inp.extractall(verify)
+          assert all(hashlib.sha256((verify/n).read_bytes()).hexdigest()==h for n,h in hashes.items())
+          manifest = {'repository':'vilkafork21/laim-baskets-adapter','branch':os.environ['TARGET_BRANCH'],'base_sha':os.environ['BASE_SHA'],'source_sha':subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(),'source_tree':os.environ['EXPECTED_TREE'],'runtime_source_files':len(sources),'node_archive_files':len(files),'file_sha256':hashes,'tests_scope':'Synthetic unit and regression tests only. Private corpus reviewed-plan replay is delivered separately, not uploaded here.','live_llm_tested':False,'sber_ds_tested':False,'production_approved':False}
+          (release/'reports'/'package-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
+          print('Архив собран:',len(files),'файлов;',len(sources),'runtime-модулей')
+          PY
+      - name: Проверить непосредственно распакованный ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R source/tests "$VERIFY_DIR/tests"
+          cp source/ruff.toml "$VERIFY_DIR/ruff.toml"
+          cd "$VERIFY_DIR"
+          unset PYTHONPATH
+          python - <<'PY'
+          import importlib,json
+          from pathlib import Path
+          root=Path.cwd().resolve()
+          for name in json.loads(Path('descriptor.json').read_text())['script']['runConfiguration']['sourceFiles']:
+              module=name[:-3].replace('/','.').removesuffix('.__init__')
+              imported=importlib.import_module(module)
+              assert Path(imported.__file__).resolve().is_relative_to(root)
+          print('Все runtime-модули импортируются из распакованного архива')
+          PY
+          python -m pytest -q -ra --junitxml="$RELEASE_DIR/reports/pytest-unpacked.xml" | tee "$RELEASE_DIR/reports/pytest-unpacked.txt"
+      - name: Итоговый протокол
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os,xml.etree.ElementTree as ET
+          from pathlib import Path
+          root=Path(os.environ['RELEASE_DIR'])
+          results={}
+          for label in ('source','unpacked'):
+              suites=list(ET.parse(root/'reports'/f'pytest-{label}.xml').getroot().iter('testsuite'))
+              values={k:sum(int(s.get(k,'0')) for s in suites) for k in ('tests','failures','errors','skipped')}
+              assert values['tests']==223 and values['failures']==values['errors']==values['skipped']==0,values
+              results[label]=values
+          p=root/'reports/package-manifest.json'
+          manifest=json.loads(p.read_text())
+          manifest['pytest']=results
+          manifest['github_run_url']='https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/actions/runs/'+os.environ['GITHUB_RUN_ID']
+          p.write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
+          (root/'BUILD-REPORT.txt').write_text('LAIM baskets adapter — кандидат v2\nPython 3.12, Ruff 0.15.5. Исходники и распакованный ZIP: 223 passed, 0 failures/errors/skips каждый.\nЖивые LLM, Sber DS и автоматическое покрытие корпуса не подтверждены. Приватные данные здесь отсутствуют.\nSource: '+manifest['source_sha']+'\n')
+          sums=[hashlib.sha256(f.read_bytes()).hexdigest()+'  '+f.relative_to(root).as_posix() for f in sorted(root.rglob('*')) if f.is_file()]
+          (root/'SHA256SUMS.txt').write_text('\n'.join(sums)+'\n')
+          print(json.dumps(results,indent=2))
+          PY
+      - name: Опубликовать только новую ветку без force и merge
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: laim-baskets-adapter-corpus-v2-code-verified
+          path: ${{ env.RELEASE_DIR }}/
+          retention-days: 30
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: corpus-hardening-failed-checks
+          path: ${{ runner.temp }}/release/reports/
+          retention-days: 7
+          if-no-files-found: warn
