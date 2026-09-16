@@ -1,0 +1,173 @@
+name: F1 verified build
+on:
+  push:
+    branches: [chore/package-verified-7060674]
+    paths: [.github/workflows/f1-verified.yml]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_SHA: f0265172f75fbb8270d0d1d31564664d3a73823a
+      EXPECTED_TREE: 7ff0de67b5eafdcb549605774727a3b825986ec3
+      TARGET_BRANCH: fix/f1-nonadditive-20260916
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: f0265172f75fbb8270d0d1d31564664d3a73823a
+          path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Подготовить стенд и восстановить точный снимок
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release/reports"
+          echo "RELEASE_DIR=$RUNNER_TEMP/release" >> "$GITHUB_ENV"
+          echo "VERIFY_DIR=$RUNNER_TEMP/node-unpacked" >> "$GITHUB_ENV"
+          python -m pip install -r source/requirements.txt pytest 'ruff==0.15.5' 'scikit-learn==1.8.0'
+          python -VV | tee "$RUNNER_TEMP/release/reports/python.txt"
+          python -m pip freeze > "$RUNNER_TEMP/release/reports/requirements-tested.txt"
+          python -m pip check | tee "$RUNNER_TEMP/release/reports/pip-check.txt"
+          cd source
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          git apply --check ../control/.github/review/f1/modified.patch
+          git apply ../control/.github/review/f1/modified.patch
+          cp ../control/.github/review/f1/nonadditive.py laim_basket/metric/nonadditive.py
+          cp ../control/.github/review/f1/test_f1.py tests/test_f1.py
+          cp ../control/.github/review/f1/check_f1_oracle.py tools/check_f1_oracle.py
+          cp ../control/.github/review/f1/f1.md docs/f1.md
+          ruff format .
+          git add -A
+          git ls-files --stage > "$RUNNER_TEMP/release/reports/source-blobs.txt"
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --cached --binary > "$RUNNER_TEMP/release/reports/changes-from-f0265172.patch"
+          git diff --cached --stat > "$RUNNER_TEMP/release/reports/changes-stat.txt"
+      - name: Проверить код и независимый эталон
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check . | tee "$RELEASE_DIR/reports/ruff.txt"
+          ruff format --check . | tee "$RELEASE_DIR/reports/format.txt"
+          python -m compileall -q main.py laim_basket tools
+          python -m pytest -q -ra --junitxml="$RELEASE_DIR/reports/pytest-source.xml" | tee "$RELEASE_DIR/reports/pytest-source.txt"
+          python tools/check_f1_oracle.py --out "$RELEASE_DIR/reports/f1-oracle.json"
+      - name: Зафиксировать проверенный код и собрать ZIP
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Поддержать F1 без подмены порядка агрегации' -m 'Гармоническое среднее средних экспертных компонентов и классификационный F1 binary/micro/macro/weighted. Явные параметры, пропуски и веса, достаточные статистики, публикация без фиктивной main_metric. Старые методы и зависимости сохранены. Новые потребители требуют laim.nonadditive-metrics.v1; внешние ноды и живые LLM не проверены. Синтетические регрессии и независимая арифметика.'
+          git log -1 --format=fuller > "$RELEASE_DIR/reports/source-commit.txt"
+          git archive --format=zip --output="$RELEASE_DIR/laim-baskets-adapter-f1-v2-source.zip" HEAD
+          python - <<'PY'
+          import ast, hashlib, json, os, subprocess, zipfile
+          from pathlib import Path, PurePosixPath
+          release, verify = Path(os.environ['RELEASE_DIR']), Path(os.environ['VERIFY_DIR'])
+          desc = json.loads(Path('descriptor.json').read_text())
+          cfg = desc['script']['runConfiguration']
+          sources = cfg['sourceFiles']
+          expected = {'main.py'} | {p.as_posix() for p in Path('laim_basket').rglob('*.py')}
+          assert len(sources) == len(set(sources)) == 39 and set(sources) == expected
+          base_desc = json.loads(subprocess.check_output(['git','show',os.environ['BASE_SHA']+':descriptor.json']))
+          clean = json.loads(json.dumps(desc))
+          clean['script']['runConfiguration']['sourceFiles'].remove('laim_basket/metric/nonadditive.py')
+          assert clean == base_desc
+          assert Path('requirements.txt').read_bytes() == subprocess.check_output(['git','show',os.environ['BASE_SHA']+':requirements.txt'])
+          files = sorted(set(sources + cfg['libraryDependencies'] + ['descriptor.json','README.md','docs/architecture.md','docs/acceptance.md','docs/f1.md']))
+          hashes = {}
+          for name in files:
+              safe = PurePosixPath(name)
+              assert not safe.is_absolute() and '..' not in safe.parts
+              path = Path(name)
+              assert path.is_file() and not path.is_symlink()
+              data = path.read_bytes()
+              assert data == subprocess.check_output(['git','show','HEAD:'+name])
+              hashes[name] = hashlib.sha256(data).hexdigest()
+              if name.endswith('.py'): ast.parse(data, filename=name, feature_version=(3,12))
+          archive = release / 'laim-baskets-adapter-f1-v2-node.zip'
+          with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as out:
+              for name in files:
+                  info = zipfile.ZipInfo(name,(2026,9,16,0,0,0))
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  info.external_attr = 0o100644 << 16
+                  out.writestr(info,Path(name).read_bytes())
+          verify.mkdir()
+          with zipfile.ZipFile(archive) as inp:
+              assert inp.testzip() is None and set(inp.namelist()) == set(files)
+              inp.extractall(verify)
+          assert all(hashlib.sha256((verify/n).read_bytes()).hexdigest()==h for n,h in hashes.items())
+          manifest = {'repository':'vilkafork21/laim-baskets-adapter','branch':os.environ['TARGET_BRANCH'],'base_sha':os.environ['BASE_SHA'],'source_sha':subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(),'source_tree':os.environ['EXPECTED_TREE'],'runtime_source_files':len(sources),'node_archive_files':len(files),'file_sha256':hashes,'tests_scope':'Synthetic unit/regression and sklearn differential tests. Private reviewed-plan corpus replay delivered separately.','live_llm_tested':False,'sber_ds_tested':False,'downstream_nodes_updated':False,'required_capability_for_f1':'laim.nonadditive-metrics.v1','production_approved':False}
+          (release/'reports'/'package-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
+          PY
+      - name: Проверить распакованный ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R source/tests "$VERIFY_DIR/tests"
+          cp source/ruff.toml "$VERIFY_DIR/ruff.toml"
+          cd "$VERIFY_DIR"
+          unset PYTHONPATH
+          python - <<'PY'
+          import importlib,json
+          from pathlib import Path
+          root=Path.cwd().resolve()
+          for name in json.loads(Path('descriptor.json').read_text())['script']['runConfiguration']['sourceFiles']:
+              module=name[:-3].replace('/','.').removesuffix('.__init__')
+              imported=importlib.import_module(module)
+              assert Path(imported.__file__).resolve().is_relative_to(root)
+          print('Все 39 runtime-модулей импортированы из распакованного ZIP')
+          PY
+          python -m pytest -q -ra --junitxml="$RELEASE_DIR/reports/pytest-unpacked.xml" | tee "$RELEASE_DIR/reports/pytest-unpacked.txt"
+      - name: Завершить проверку и опубликовать только новую ветку
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os,xml.etree.ElementTree as ET
+          from pathlib import Path
+          root=Path(os.environ['RELEASE_DIR'])
+          results={}
+          for label in ('source','unpacked'):
+              suites=list(ET.parse(root/'reports'/f'pytest-{label}.xml').getroot().iter('testsuite'))
+              values={k:sum(int(s.get(k,'0')) for s in suites) for k in ('tests','failures','errors','skipped')}
+              assert values['tests']==265 and values['failures']==values['errors']==values['skipped']==0,values
+              results[label]=values
+          oracle=json.loads((root/'reports/f1-oracle.json').read_text())
+          assert oracle['cases']==1600 and oracle['failures']==0
+          p=root/'reports/package-manifest.json'
+          manifest=json.loads(p.read_text())
+          manifest.update(pytest=results,f1_oracle=oracle,github_run_url='https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/actions/runs/'+os.environ['GITHUB_RUN_ID'])
+          p.write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
+          (root/'BUILD-REPORT.txt').write_text('LAIM baskets adapter F1 — проверенный код, не production-допуск.\nИсходники и распакованный ZIP: 265 passed каждый. 1600 сравнений со sklearn.\nPython 3.12; Ruff 0.15.5. Порты и runtime-зависимости сохранены.\nF1 требует поддержки laim.nonadditive-metrics.v1 внешними нодами.\nЖивые LLM, Sber DS и внешние потребители не проверялись.\nSource: '+manifest['source_sha']+'\n')
+          sums=[hashlib.sha256(f.read_bytes()).hexdigest()+'  '+f.relative_to(root).as_posix() for f in sorted(root.rglob('*')) if f.is_file()]
+          (root/'SHA256SUMS.txt').write_text('\n'.join(sums)+'\n')
+          print(json.dumps(results))
+          PY
+          cd source
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: laim-baskets-adapter-f1-v2-code-verified
+          path: ${{ env.RELEASE_DIR }}/
+          retention-days: 30
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: f1-build-failed-checks
+          path: ${{ runner.temp }}/release/reports/
+          retention-days: 7
+          if-no-files-found: warn
