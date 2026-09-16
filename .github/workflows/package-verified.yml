@@ -1,0 +1,191 @@
+name: verified ZIP 7060674
+
+on:
+  push:
+    branches: [chore/package-verified-7060674]
+    paths: [.github/workflows/package-verified.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SOURCE_SHA: 706067411c2abec1eb27d5629179774496738a39
+      RELEASE_DIR: ${{ runner.temp }}/laim-adapter-release
+      VERIFY_DIR: ${{ runner.temp }}/laim-adapter-unpacked
+    steps:
+      - name: Получить неизменённый снимок исходников
+        uses: actions/checkout@v4
+        with:
+          ref: 706067411c2abec1eb27d5629179774496738a39
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Подготовить зависимости и протокол
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RELEASE_DIR/reports"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python -VV | tee "$RELEASE_DIR/reports/python.txt"
+          python -m pip install -r requirements.txt pytest 'ruff==0.15.5'
+          python -m pip freeze > "$RELEASE_DIR/reports/requirements-tested.txt"
+          python -m pip check | tee "$RELEASE_DIR/reports/pip-check.txt"
+          git log -1 --format=fuller > "$RELEASE_DIR/reports/source-commit.txt"
+      - name: Проверить исходники
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check . | tee "$RELEASE_DIR/reports/ruff.txt"
+          python -m compileall -q main.py measurement.py laim_basket
+          python -m pytest -q -ra --junitxml="$RELEASE_DIR/reports/pytest-source.xml" | tee "$RELEASE_DIR/reports/pytest-source.txt"
+      - name: Собрать ZIP ноды и точный архив исходного коммита
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=zip --output="$RELEASE_DIR/laim-baskets-adapter-7060674-source.zip" "$SOURCE_SHA"
+          python - <<'PY'
+          import ast
+          import hashlib
+          import importlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import subprocess
+          import zipfile
+
+          root = Path.cwd()
+          release = Path(os.environ['RELEASE_DIR'])
+          verify = Path(os.environ['VERIFY_DIR'])
+          descriptor = json.loads((root / 'descriptor.json').read_text())
+          config = descriptor['script']['runConfiguration']
+          sources = config['sourceFiles']
+          assert len(sources) == len(set(sources)), 'Повтор sourceFiles'
+          expected = {'main.py', 'measurement.py'} | {
+              p.relative_to(root).as_posix() for p in (root / 'laim_basket').rglob('*.py')
+          }
+          assert set(sources) == expected, (set(sources) - expected, expected - set(sources))
+          files = sorted(set(sources + config['libraryDependencies'] + ['descriptor.json', 'README.md']))
+          manifest = {}
+          for name in files:
+              path = PurePosixPath(name)
+              assert not path.is_absolute() and '..' not in path.parts, name
+              file = root / name
+              assert file.is_file() and not file.is_symlink(), name
+              data = file.read_bytes()
+              committed = subprocess.check_output(['git', 'show', os.environ['SOURCE_SHA'] + ':' + name])
+              assert data == committed, 'Файл отличается от исходного коммита: ' + name
+              manifest[name] = hashlib.sha256(data).hexdigest()
+              if name.endswith('.py'):
+                  ast.parse(data, filename=name, feature_version=(3, 12))
+          archive = release / 'laim-baskets-adapter-7060674-node.zip'
+          with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as out:
+              for name in files:
+                  info = zipfile.ZipInfo(name, date_time=(2026, 9, 6, 11, 44, 26))
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  info.external_attr = 0o100644 << 16
+                  out.writestr(info, (root / name).read_bytes())
+          verify.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive) as inp:
+              assert inp.testzip() is None
+              assert set(inp.namelist()) == set(files)
+              inp.extractall(verify)
+          for name, expected_hash in manifest.items():
+              assert hashlib.sha256((verify / name).read_bytes()).hexdigest() == expected_hash
+          report = {
+              'repository': 'vilkafork21/laim-baskets-adapter',
+              'source_branch': 'research-dev',
+              'source_sha': os.environ['SOURCE_SHA'],
+              'runtime_source_modifications': False,
+              'source_files': len(sources),
+              'node_archive_files': len(files),
+              'node_archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+              'file_sha256': manifest,
+              'checks': ['sourceFiles completeness', 'all source bytes match pinned commit', 'Python 3.12 syntax', 'ZIP CRC', 'unpacked file SHA-256'],
+              'limitations': ['No live LLM calls', 'No deployment into Sber DS', 'No live monitoring traces or private basket validation', 'v3 requires a coordinated research-dev set of nodes; not a production approval'],
+          }
+          (release / 'reports' / 'package-manifest.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+          print(json.dumps({k: v for k, v in report.items() if k != 'file_sha256'}, ensure_ascii=False, indent=2))
+          PY
+      - name: Прогнать тесты непосредственно на распакованном ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R tests "$VERIFY_DIR/tests"
+          cd "$VERIFY_DIR"
+          unset PYTHONPATH
+          python - <<'PY'
+          import importlib
+          import json
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          descriptor = json.loads(Path('descriptor.json').read_text())
+          for name in descriptor['script']['runConfiguration']['sourceFiles']:
+              module = name[:-3].replace('/', '.')
+              if module.endswith('.__init__'):
+                  module = module[:-9]
+              loaded = importlib.import_module(module)
+              assert Path(loaded.__file__).resolve().is_relative_to(root), loaded.__file__
+          print('Все runtime-модули импортированы из распакованного ZIP.')
+          PY
+          python -m pytest -q -ra --junitxml="$RELEASE_DIR/reports/pytest-unpacked.xml" | tee "$RELEASE_DIR/reports/pytest-unpacked.txt"
+      - name: Завершить протокол и контрольные суммы
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          release = Path(os.environ['RELEASE_DIR'])
+          results = {}
+          for label in ['source', 'unpacked']:
+              tree = ET.parse(release / 'reports' / ('pytest-' + label + '.xml'))
+              suites = list(tree.getroot().iter('testsuite'))
+              values = {k: sum(int(s.get(k, '0')) for s in suites) for k in ['tests', 'failures', 'errors', 'skipped']}
+              assert values['tests'] > 0 and values['failures'] == values['errors'] == values['skipped'] == 0, values
+              results[label] = values
+          path = release / 'reports' / 'package-manifest.json'
+          manifest = json.loads(path.read_text())
+          manifest['pytest'] = results
+          manifest['github_run_url'] = 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID']
+          path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+          text = '''ПРОВЕРЕННАЯ СБОРКА LAIM BASKETS ADAPTER
+          Исходник: research-dev@706067411c2abec1eb27d5629179774496738a39.
+          Runtime-код не изменён. descriptor.json лежит в корне ZIP ноды.
+          node.zip — пакет для импорта ноды, source.zip — исходники с тестами.
+          Отчёты: reports/package-manifest.json, pytest-*.xml и pytest-*.txt.
+          Python 3.12, Ruff 0.15.5; точные версии зависимостей записаны в reports/requirements-tested.txt.
+          Проверены исходники и повторно распакованный пакет; пропущенных тестов нет.
+          ВАЖНО: контракт v3 требует согласованного комплекта нод из research-dev.
+          Это не подтверждение production-готовности. Живой LLM, Sber DS и реальные приватные корзины не проверялись.
+          '''
+          (release / 'BUILD-REPORT.txt').write_text(text + '\nРезультаты pytest: ' + json.dumps(results, ensure_ascii=False) + '\n')
+          sums = []
+          for file in sorted(release.rglob('*')):
+              if file.is_file() and file.name != 'SHA256SUMS.txt':
+                  sums.append(hashlib.sha256(file.read_bytes()).hexdigest() + '  ' + file.relative_to(release).as_posix())
+          (release / 'SHA256SUMS.txt').write_text('\n'.join(sums) + '\n')
+          print(json.dumps(results, indent=2))
+          PY
+      - name: Сохранить проверенные ZIP и протокол
+        uses: actions/upload-artifact@v4
+        with:
+          name: laim-baskets-adapter-7060674-verified
+          path: ${{ env.RELEASE_DIR }}/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Сохранить диагностику при ошибке
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laim-baskets-adapter-7060674-failed-checks
+          path: ${{ env.RELEASE_DIR }}/reports/
+          if-no-files-found: warn
+          retention-days: 7
