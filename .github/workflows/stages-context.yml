@@ -1,0 +1,25 @@
+name: stages source context
+on:
+  push:
+    branches: [chore/package-verified-7060674]
+    paths: [.github/workflows/stages-context.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export pinned base and repository history
+        run: |
+          mkdir -p /tmp/stages-context
+          git archive --format=zip --output=/tmp/stages-context/base-b83bcb4.zip b83bcb4af9446e10059d2de0b59b023fc25acc10
+          git bundle create /tmp/stages-context/repository.bundle --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stages-source-context-b83bcb4
+          path: /tmp/stages-context/
+          retention-days: 7
