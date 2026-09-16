@@ -1,0 +1,218 @@
+name: stages rebuild v2 verification
+on:
+  push:
+    branches: [chore/package-verified-7060674]
+    paths: [.github/workflows/stages-rebuild.yml]
+permissions:
+  contents: write
+jobs:
+  verify-and-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_SHA: b83bcb4af9446e10059d2de0b59b023fc25acc10
+      EXPECTED_TREE: d871a51d1603010c2ecc9a647fc00e457bf6409a
+      RELEASE_DIR: /tmp/laim-stages-release
+      VERIFY_DIR: /tmp/laim-stages-unpacked
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Восстановить точный проверяемый снимок от b83bcb4
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .build/stages-rebuild.1.b64 .build/stages-rebuild.2.b64 > /tmp/stages-recipe.b64
+          git switch --detach "$BASE_SHA"
+          python - <<'PY'
+          import base64
+          import bz2
+          import hashlib
+          import json
+          from pathlib import Path, PurePosixPath
+          import subprocess
+          data = bz2.decompress(base64.b64decode(Path('/tmp/stages-recipe.b64').read_bytes()))
+          assert hashlib.sha256(data).hexdigest() == '97d38f9cdb458404c3b98f32f94cee0ca20ae4b3f1a9083b5655b56d2c63c358'
+          for name, operations in json.loads(data).items():
+              safe = PurePosixPath(name)
+              assert not safe.is_absolute() and '..' not in safe.parts and '.git' not in safe.parts
+              original = subprocess.run(['git', 'show', 'HEAD:' + name], capture_output=True)
+              lines = original.stdout.decode().splitlines(True) if original.returncode == 0 else []
+              content = ''.join(item if isinstance(item, str) else ''.join(lines[item[0]:item[1]]) for item in operations)
+              path = Path(name)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_text(content, encoding='utf-8')
+          PY
+          git add README.md descriptor.json laim_basket main.py tests
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          mkdir -p "$RELEASE_DIR/reports"
+          git diff --cached --binary > "$RELEASE_DIR/reports/changes-from-b83bcb4.patch"
+      - name: Подготовить зависимости
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -VV | tee "$RELEASE_DIR/reports/python.txt"
+          python -m pip install -r requirements.txt pytest 'ruff==0.15.5'
+          python -m pip check | tee "$RELEASE_DIR/reports/pip-check.txt"
+          python -m pip freeze > "$RELEASE_DIR/reports/requirements-tested.txt"
+      - name: Ruff и полный набор тестов исходников
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check . | tee "$RELEASE_DIR/reports/ruff.txt"
+          python -m compileall -q main.py laim_basket
+          python -m pytest -q -ra --junitxml="$RELEASE_DIR/reports/pytest-source.xml" | tee "$RELEASE_DIR/reports/pytest-source.txt"
+      - name: Зафиксировать проверенный код локально и собрать архивы
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Разделить адаптер на независимые этапы L/S/K' -m 'Сохранены четыре входа, настройки model_id/sheet_name, зависимости и контракты v2/v1. Добавлена настройка agent_ci. XML-ридер DOCX, проверка цитат baseline и кеша построчных формул; независимая деградация S/K без смены листа. README и регрессии обновлены. Живые прогоны 19 пакетов и платформенная приёмка не выполнялись.'
+          git rev-parse HEAD > "$RELEASE_DIR/reports/source-sha.txt"
+          git log -1 --format=fuller > "$RELEASE_DIR/reports/source-commit.txt"
+          git archive --format=zip --output="$RELEASE_DIR/laim-baskets-adapter-stages-v2-source.zip" HEAD
+          python - <<'PY'
+          import ast
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import subprocess
+          import zipfile
+          root = Path.cwd()
+          release = Path(os.environ['RELEASE_DIR'])
+          verify = Path(os.environ['VERIFY_DIR'])
+          descriptor = json.loads(Path('descriptor.json').read_text())
+          config = descriptor['script']['runConfiguration']
+          sources = config['sourceFiles']
+          actual = {'main.py'} | {p.as_posix() for p in Path('laim_basket').rglob('*.py')}
+          assert set(sources) == actual and len(sources) == len(set(sources))
+          assert sum(port['in'] for port in descriptor['ports']) == 4
+          assert Path('requirements.txt').read_bytes() == subprocess.check_output(['git', 'show', os.environ['BASE_SHA'] + ':requirements.txt'])
+          files = sorted(set(sources + config['libraryDependencies'] + ['descriptor.json', 'README.md']))
+          manifest = {}
+          archive = release / 'laim-baskets-adapter-stages-v2-node.zip'
+          with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as out:
+              for name in files:
+                  safe = PurePosixPath(name)
+                  assert not safe.is_absolute() and '..' not in safe.parts
+                  path = root / name
+                  assert path.is_file() and not path.is_symlink()
+                  data = path.read_bytes()
+                  assert data == subprocess.check_output(['git', 'show', 'HEAD:' + name])
+                  if name.endswith('.py'):
+                      ast.parse(data, filename=name, feature_version=(3, 12))
+                  info = zipfile.ZipInfo(name, date_time=(2026, 9, 16, 12, 0, 0))
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  info.external_attr = 0o100644 << 16
+                  out.writestr(info, data)
+                  manifest[name] = hashlib.sha256(data).hexdigest()
+          verify.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive) as inp:
+              assert inp.testzip() is None and set(inp.namelist()) == set(files)
+              inp.extractall(verify)
+          for name, expected in manifest.items():
+              assert hashlib.sha256((verify / name).read_bytes()).hexdigest() == expected
+          report = {
+              'repository': 'vilkafork21/laim-baskets-adapter',
+              'branch': 'fix/stages-rebuild', 'base_sha': os.environ['BASE_SHA'],
+              'source_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'source_tree': os.environ['EXPECTED_TREE'],
+              'source_files': len(sources), 'node_archive_files': len(files),
+              'node_archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+              'file_sha256': manifest,
+              'contracts': ['laim-monitoring-metric.v2', 'laim-umr.v2', 'laim-run-report.v1'],
+              'new_settings': ['agent_ci'], 'input_ports': 4, 'dependencies_changed': False,
+              'local_development_tests': {'python': '3.13.5', 'base_passed': 119, 'new_passed': 198},
+              'limitations': ['Live Sonnet/Haiku run on the original 19 packages not performed', 'Original claude -p runner and 19 packages not supplied to this build', 'No Sber DS or live gateway invocation', 'gigachat-3-ultra acceptance for CI09774440 and 438/554 remains with owner', 'Existing DOCUMENT_CHAR_CAP=120000 remains; long report tail may be omitted from LLM context', 'Formula cache freshness is not verified'],
+              'github_run_url': 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'],
+          }
+          (release / 'reports' / 'package-manifest.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+          print(json.dumps({k: v for k, v in report.items() if k != 'file_sha256'}, ensure_ascii=False, indent=2))
+          PY
+      - name: Повторно проверить именно распакованный ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R tests "$VERIFY_DIR/tests"
+          cd "$VERIFY_DIR"
+          unset PYTHONPATH
+          python - <<'PY'
+          import importlib
+          import json
+          from pathlib import Path
+          root = Path.cwd().resolve()
+          for name in json.loads(Path('descriptor.json').read_text())['script']['runConfiguration']['sourceFiles']:
+              module = name[:-3].replace('/', '.')
+              if module.endswith('.__init__'):
+                  module = module[:-9]
+              loaded = importlib.import_module(module)
+              assert Path(loaded.__file__).resolve().is_relative_to(root)
+          print('Все runtime-модули импортируются из распакованного ZIP.')
+          PY
+          ruff check . | tee "$RELEASE_DIR/reports/ruff-unpacked.txt"
+          python -m pytest -q -ra --junitxml="$RELEASE_DIR/reports/pytest-unpacked.xml" | tee "$RELEASE_DIR/reports/pytest-unpacked.txt"
+      - name: Итоговый протокол
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path(os.environ['RELEASE_DIR'])
+          results = {}
+          for label in ['source', 'unpacked']:
+              suites = list(ET.parse(root / 'reports' / ('pytest-' + label + '.xml')).getroot().iter('testsuite'))
+              result = {key: sum(int(suite.get(key, 0)) for suite in suites) for key in ['tests', 'failures', 'errors', 'skipped']}
+              assert result == {'tests': 198, 'failures': 0, 'errors': 0, 'skipped': 0}, result
+              results[label] = result
+          path = root / 'reports/package-manifest.json'
+          manifest = json.loads(path.read_text())
+          manifest['pytest'] = results
+          path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+          text = ('LAIM BASKETS ADAPTER — ЭТАПЫ L/S/K, КОНТРАКТЫ V2/V1\n'
+                  + 'База: ' + manifest['base_sha'] + '\nКоммит сборки: ' + manifest['source_sha']
+                  + '\nВетка: fix/stages-rebuild. Ветки dev/test/km-val-report/research-dev не меняются.\n'
+                  + 'node.zip — импорт ноды, descriptor.json в корне; source.zip — исходники и тесты.\n'
+                  + 'Python 3.12, Ruff 0.15.5, pip check, исходники и повторно распакованный пакет проверены.\n'
+                  + 'Результат: 198 тестов в каждом прогоне, без ошибок и пропусков.\n'
+                  + 'Точные версии и протоколы: reports/.\n'
+                  + 'Живые прогоны Sonnet/Haiku по 19 исходным пакетам НЕ выполнялись.\n'
+                  + 'Приёмка в Sber DS на gigachat-3-ultra по CI09774440 и паре 438/554 — за владельцем.\n'
+                  + 'Это кандидат на приёмку, а не подтверждение production-готовности.\n')
+          (root / 'BUILD-REPORT.txt').write_text(text, encoding='utf-8')
+          sums = [hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.relative_to(root).as_posix()
+                  for p in sorted(root.rglob('*')) if p.is_file() and p.name != 'SHA256SUMS.txt']
+          (root / 'SHA256SUMS.txt').write_text('\n'.join(sums) + '\n')
+          print(json.dumps(results, indent=2))
+          PY
+      - name: Опубликовать только fix/stages-rebuild без merge и force
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(git ls-remote --heads origin refs/heads/fix/stages-rebuild | cut -f1)
+          test -z "$existing" || test "$existing" = "$BASE_SHA" || test "$existing" = "$(git rev-parse HEAD)"
+          git push origin HEAD:refs/heads/fix/stages-rebuild
+      - name: Сохранить ZIP, исходники и протоколы
+        uses: actions/upload-artifact@v4
+        with:
+          name: laim-baskets-adapter-stages-v2-verified
+          path: /tmp/laim-stages-release/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Диагностика при отказе
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stages-v2-failed-checks
+          path: /tmp/laim-stages-release/reports/
+          retention-days: 7
+          if-no-files-found: warn
