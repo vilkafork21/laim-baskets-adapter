@@ -1,0 +1,24 @@
+name: adapter review tools
+on:
+  push:
+    branches: [chore/package-verified-7060674]
+    paths: [.github/workflows/review-tools.yml]
+permissions:
+  contents: read
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Wheels только для стенда проверки, не зависимость ноды
+        run: |
+          mkdir -p wheels
+          python -m pip download --only-binary=:all: --dest wheels 'ruff==0.15.5' 'pyarrow==21.0.0'
+          sha256sum wheels/* > wheels/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adapter-review-tools
+          path: wheels/
+          retention-days: 3
