@@ -1,0 +1,376 @@
+diff --git a/README.md b/README.md
+index ab03ef7202f3ec683e2b0423216c044d6a8ae33f..4fcfcda4aaf2dbc581651b79c5c29c9dc5d30fb6 100644
+--- a/README.md
++++ b/README.md
+@@ -46,2 +46,10 @@ S и K деградируют независимо; после успешног
+ 
++## F1
++
++Поддержаны `harmonic_mean_of_means` (экспертные компоненты) и `classification_f1`
++(binary/micro/macro/weighted). Это метрики выборки: в UMR публикуются компоненты,
++а не фиктивный построчный F1. Старый агрегатор среднего для них не подходит.
++Определение, параметры и требование `laim.nonadditive-metrics.v1` описаны
++в [контракте F1](docs/f1.md). Зависимости ноды не расширены.
++
+ ## Проверка и сборка
+diff --git a/descriptor.json b/descriptor.json
+index 19ccab67d016889d75ef62cee8b43575a8be6938..d097473bf7073563e957662dcb442bab08e0bf4b 100644
+--- a/descriptor.json
++++ b/descriptor.json
+@@ -155,2 +155,3 @@
+         "laim_basket/metric/__init__.py",
++        "laim_basket/metric/nonadditive.py",
+         "laim_basket/metric/engine.py",
+diff --git a/laim_basket/contract.py b/laim_basket/contract.py
+index 4179e4adf20a519ad5699550bc7219d6f1c62901..92d95ae9d766f46593085bf6d267aa099a6b6372 100644
+--- a/laim_basket/contract.py
++++ b/laim_basket/contract.py
+@@ -5,2 +5,3 @@ from decimal import Decimal
+ from .errors import PackageError
++from .metric.nonadditive import METHODS as NONADDITIVE_METHODS
+ from .models import RunResult
+@@ -65,2 +66,3 @@ def monitoring_metric(result: RunResult) -> dict[str, object]:
+         }
++    nonadditive = plan.method in NONADDITIVE_METHODS
+     metric = result.km["main_metric"]
+@@ -73,3 +75,8 @@ def monitoring_metric(result: RunResult) -> dict[str, object]:
+         "name": plan.metric_name,
+-        "score_column": "main_metric",
++        "score_column": None if nonadditive else "main_metric",
++        **(
++            {"score_scope": "dataset", "required_capabilities": ["laim.nonadditive-metrics.v1"]}
++            if nonadditive
++            else {}
++        ),
+         "assessment_mode": plan.assessment_mode,
+@@ -77,2 +84,3 @@ def monitoring_metric(result: RunResult) -> dict[str, object]:
+             "method": plan.method,
++            **({"metric_options": dict(plan.metric_options)} if nonadditive else {}),
+             "sources": [
+@@ -96,3 +104,12 @@ def monitoring_metric(result: RunResult) -> dict[str, object]:
+         "aggregation": {
+-            "method": plan.reducer,
++            "method": plan.method if nonadditive else plan.reducer,
++            **(
++                {
++                    "sample_weighting": "frequency"
++                    if plan.reducer == "frequency_weighted_mean"
++                    else "uniform"
++                }
++                if nonadditive
++                else {}
++            ),
+             "weight_column": "input_query_count"
+diff --git a/laim_basket/llm/prompts.py b/laim_basket/llm/prompts.py
+index 6a04fd3b9f53cc9a8c15bb5af71381872dffa570..41f07d959c2a7f199a9372e83d1a40d2a0cdf9bc 100644
+--- a/laim_basket/llm/prompts.py
++++ b/laim_basket/llm/prompts.py
+@@ -54,2 +54,21 @@ prediction | target. Для prediction/target normalization=label, для чис
+ ровно по одному prediction и target.
++- harmonic_mean_of_means: ТОЛЬКО если методика требует сначала средние двух
++компонентов, затем их гармоническое среднее 2PR/(P+R). Роли precision_component
++и recall_component (ровно по одной). Оценки 0/1/2 нормализуй явным value_map,
++например {"0":0,"1":0.5,"2":1} при scale=ratio. Не добавляй третий критерий.
++metric_options={"zero_division":0|1|"fail"} по методике. exclude_unit исключает
++неполную пару, exclude_value даёт отдельные знаменатели компонентам, zero
++заменяет пропуски нулём. quotes обязаны назвать формулу и порядок агрегации.
++- classification_f1: для prediction/target классов, не экспертных компонентов.
++metric_options требует average (binary/micro/macro/weighted), labels (полный
++выбранный список классов или null = объединение наблюдаемых), positive_label
++(строка только для binary, иначе null) и zero_division (0/1/"fail"). binary
++требует labels=null. missing_policy только fail/exclude_unit. multilabel и
++усреднение построчных F1 не поддерживаются этим методом.
++- В обоих F1 reducer задаёт ВЕС ЕДИНИЦ: mean = равный вес, frequency_weighted_mean
++= частоты; это не финальное усреднение F1. weighted в average взвешивает классы
++по поддержке и не является частотой строк. Не выбирай семейство F1 только по
++названию macro/micro: формула в методике определяет операцию. Если подпись
++в отчёте расходится с формулой, сохрани дословное название и отметь конфликт
++в quotes.naming; не подбирай метод для совпадения с baseline.
+ - Построчная формула с A1-ссылками только своей строки допустима по сохранённому
+diff --git a/laim_basket/llm/schemas.py b/laim_basket/llm/schemas.py
+index 90c7b9344a1fdc4d111cf256bb4d807776ccc3c7..98036b716d3ea17b8c6ad3643af396bce8d4b8c2 100644
+--- a/laim_basket/llm/schemas.py
++++ b/laim_basket/llm/schemas.py
+@@ -116,3 +116,13 @@ _SOURCE = {
+         "column_id": _ADDRESS,
+-        "role": {"enum": ["final_score", "criterion", "assessor_vote", "prediction", "target"]},
++        "role": {
++            "enum": [
++                "final_score",
++                "criterion",
++                "assessor_vote",
++                "prediction",
++                "target",
++                "precision_component",
++                "recall_component",
++            ]
++        },
+         "normalization": {
+@@ -153,2 +163,4 @@ METRIC_SCHEMA = {
+                 "majority",
++                "harmonic_mean_of_means",
++                "classification_f1",
+             ]
+@@ -160,2 +172,22 @@ METRIC_SCHEMA = {
+         "scale": {"enum": ["ratio", "percent", "raw"]},
++        "metric_options": {
++            "type": "object",
++            "additionalProperties": False,
++            "properties": {
++                "zero_division": {"enum": [0, 1, "fail"]},
++                "average": {"enum": ["binary", "micro", "macro", "weighted"]},
++                "labels": {
++                    "oneOf": [
++                        {"type": "null"},
++                        {
++                            "type": "array",
++                            "minItems": 1,
++                            "uniqueItems": True,
++                            "items": {"type": "string", "minLength": 1},
++                        },
++                    ]
++                },
++                "positive_label": {"type": ["string", "null"], "minLength": 1},
++            },
++        },
+         "missing_values": {
+diff --git a/laim_basket/llm/tasks.py b/laim_basket/llm/tasks.py
+index 0aadce4aa1431c3b05ddeb99f98914cab75745cd..abb84c706c0e17ec52fbf132da4a38050b1b7635 100644
+--- a/laim_basket/llm/tasks.py
++++ b/laim_basket/llm/tasks.py
+@@ -273,2 +273,10 @@ def run_metric(
+     request_structured(client, base_messages, METRIC_SCHEMA, "metric", validate_extra=validate)
++    if resolved["plan"].metric_options:
++        journal.warning(
++            "nonadditive_metric",
++            "КМ определена на выборке: main_metric по строкам не публикуется. "
++            "Потребитель должен поддерживать laim.nonadditive-metrics.v1 и порядок агрегации.",
++        )
++        if resolved["plan"].evidence.get("naming"):
++            journal.warning("metric_naming_review", "; ".join(resolved["plan"].evidence["naming"]))
+     if resolved["plan"].missing_values:
+diff --git a/laim_basket/metric/engine.py b/laim_basket/metric/engine.py
+index 8762fe99efb9b61714e139b8cdfd15a46f5fc8ab..0a6e32206de45417c2f1bc027208ea6d4f3eb2ad 100644
+--- a/laim_basket/metric/engine.py
++++ b/laim_basket/metric/engine.py
+@@ -11,2 +11,4 @@ from ..transform.values import blank as _blank
+ from ..transform.values import normalize_key
++from .nonadditive import METHODS as NONADDITIVE_METHODS
++from .nonadditive import aggregate
+ from .resolve import decimal_value, reported_quantum
+@@ -238,2 +240,19 @@ def evaluate(
+     records = _unit_records(frame, values, plan)
++    if plan.method in NONADDITIVE_METHODS:
++        value, coverage, statistics = aggregate(records, plan)
++        published = _published_scale(value, plan.scale)
++        statistics.update(
++            statistics_version="laim.nonadditive-statistics.v1",
++            value_scale="ratio",
++            result_exact=str(value),
++        )
++        km = {
++            "recomputed_value": float(published),
++            "recomputed_exact": str(published),
++            "coverage": coverage,
++            "percent_domain_columns": percent_columns,
++            "aggregation_statistics": statistics,
++        }
++        # Никакой фиктивной main_metric: downstream обязан агрегировать компоненты/классы.
++        return frame.drop(columns=["main_metric"], errors="ignore").copy(), reconcile(km, plan)
+     scores = [_score(record, plan) for record in records]
+diff --git a/laim_basket/metric/resolve.py b/laim_basket/metric/resolve.py
+index 46854558be9c36247ed7c1fb6e0ff7a46dc85899..9fd4bba591f432b4017366a6c14106eb699758cc 100644
+--- a/laim_basket/metric/resolve.py
++++ b/laim_basket/metric/resolve.py
+@@ -23,2 +23,3 @@ from ..transform.values import blank as _blank
+ from ..transform.values import normalize_key
++from .nonadditive import validate_options
+ 
+@@ -52,2 +53,5 @@ def _validate_source_contract(method: str, sources: list[dict[str, object]]) ->
+         "accuracy": counts == Counter({"prediction": 1, "target": 1}),
++        "classification_f1": counts == Counter({"prediction": 1, "target": 1}),
++        "harmonic_mean_of_means": counts
++        == Counter({"precision_component": 1, "recall_component": 1}),
+         "mean_criteria": counts["criterion"] >= 2 and len(counts) == 1,
+@@ -157,2 +161,3 @@ def resolve_measurement_plan(
+ 
++    metric_options = validate_options(proposal)
+     method = proposal["method"]
+@@ -356,2 +361,3 @@ def resolve_measurement_plan(
+         missing_values=missing_values,
++        metric_options=metric_options,
+     )
+diff --git a/laim_basket/models.py b/laim_basket/models.py
+index d515a2da6933a0c35ad38552d21926074c60d9e9..6ecf9f301ad80cc550e62c8b165d282f61836084 100644
+--- a/laim_basket/models.py
++++ b/laim_basket/models.py
+@@ -84,2 +84,4 @@ class MeasurementPlan:
+ 
++    metric_options: dict[str, object] = field(default_factory=dict)
++
+     @property
+@@ -102,2 +104,3 @@ class MeasurementPlan:
+                 "method": self.method,
++                **({"metric_options": dict(self.metric_options)} if self.metric_options else {}),
+                 "sources": list(self.sources),
+diff --git a/laim_basket/pipeline.py b/laim_basket/pipeline.py
+index 476873c53b2945a26163bcf0abfbcd41dff485de..ba9657de42b953c302d07af02a92ac412a30747a 100644
+--- a/laim_basket/pipeline.py
++++ b/laim_basket/pipeline.py
+@@ -68,2 +68,7 @@ def _km_summary(km: dict | None) -> dict | None:
+         "coverage": km["coverage"],
++        **(
++            {"aggregation_statistics": km["aggregation_statistics"]}
++            if "aggregation_statistics" in km
++            else {}
++        ),
+     }
+diff --git a/laim_basket/publish.py b/laim_basket/publish.py
+index 9e1dba72e6f1d225e1cbf6a1ce7368703276ba91..cdc43e2010743605d9dee577eb5505948ff6f211 100644
+--- a/laim_basket/publish.py
++++ b/laim_basket/publish.py
+@@ -25,3 +25,9 @@ DIALOGUE_SHEET = "Вариант для диалога"
+ 
+-_METRIC_ROLES = {"final_score", "criterion", "assessor_vote"}
++_METRIC_ROLES = {
++    "final_score",
++    "criterion",
++    "assessor_vote",
++    "precision_component",
++    "recall_component",
++}
+ _LABEL_ROLES = {"prediction": "output_answer", "target": "reference_answer"}
+@@ -158,2 +164,4 @@ def _source_columns(
+             ]
++        elif plan.method == "classification_f1":
++            result[name] = metrics[source["column_id"]]
+         elif name not in frame:
+diff --git a/tests/test_stages.py b/tests/test_stages.py
+index 96964d14810cfd5cf20e76caffc2e5e656a511ce..3c41e18cf51be8919b11486494acc45f9773c4d0 100644
+--- a/tests/test_stages.py
++++ b/tests/test_stages.py
+@@ -161,2 +161,3 @@ def test_public_descriptor_changes_only_optional_agent_ci_and_sources():
+         "laim_basket/metric/baseline.py",
++        "laim_basket/metric/nonadditive.py",
+         "laim_basket/context.py",
+diff --git a/tools/verify_arithmetic.py b/tools/verify_arithmetic.py
+index 3bb773bc2a3a0d44f2c9be74420bcdd5176db6b2..3f68ce52766c90f74ca433f0561d56cf830dc9c0 100644
+--- a/tools/verify_arithmetic.py
++++ b/tools/verify_arithmetic.py
+@@ -14,2 +14,3 @@ from collections import defaultdict
+ from decimal import Decimal
++from fractions import Fraction
+ from pathlib import Path
+@@ -42,2 +43,80 @@ def number(value, source, scale):
+ 
++def nonlinear(samples, plan):
++    """Независимый Fraction-пересчёт: не импортирует код агрегатора ноды."""
++    method = plan["method"]
++    options = plan["metric_options"]
++    roles = [source["role"] for source in plan["sources"]]
++    policy = plan["missing_policy"]
++    kept = []
++    for values, weight in samples:
++        missing = any(v is None for v in values)
++        if missing and policy == "fail":
++            raise ValueError("Пропуск при policy=fail")
++        if missing and policy == "exclude_unit":
++            continue
++        if missing and policy == "zero":
++            values = [0 if v is None else v for v in values]
++        if all(v is None for v in values):
++            continue
++        kept.append((dict(zip(roles, values)), Fraction(weight)))
++
++    def divide(a, b):
++        if b:
++            return a / b
++        if options["zero_division"] == "fail":
++            raise ValueError("Неопределённая F1 по заданной политике")
++        return Fraction(options["zero_division"])
++
++    if method == "harmonic_mean_of_means":
++        stats = {}
++        means = []
++        for role in ("precision_component", "recall_component"):
++            pairs = [(Fraction(v[role]), w) for v, w in kept if v[role] is not None]
++            total = sum((v * w for v, w in pairs), Fraction(0))
++            den = sum((w for v, w in pairs), Fraction(0))
++            if not den:
++                raise ValueError("Компонент отсутствует целиком")
++            means.append(total / den)
++            stats[role] = {"sum": str(total), "weight": str(den), "units": len(pairs)}
++        a, b = means
++        value = divide(2 * a * b, a + b)
++    else:
++        labels = options["labels"]
++        if options["average"] == "binary":
++            labels = [label(options["positive_label"])]
++        elif labels is None:
++            labels = sorted({v[role] for v, _w in kept for role in ("target", "prediction")})
++        else:
++            labels = [label(v) for v in labels]
++        counts = []
++        for cls in labels:
++            tp = sum((w for v, w in kept if v["target"] == v["prediction"] == cls), Fraction(0))
++            fp = sum((w for v, w in kept if v["prediction"] == cls != v["target"]), Fraction(0))
++            fn = sum((w for v, w in kept if v["target"] == cls != v["prediction"]), Fraction(0))
++            counts.append((tp, fp, fn))
++        if options["average"] in {"binary", "micro"}:
++            value = divide(
++                sum(2 * tp for tp, fp, fn in counts), sum(2 * tp + fp + fn for tp, fp, fn in counts)
++            )
++        else:
++            weights = (
++                [tp + fn for tp, fp, fn in counts]
++                if options["average"] == "weighted"
++                else [1] * len(counts)
++            )
++            weights = weights if sum(weights) else [1] * len(counts)
++            value = sum(
++                divide(2 * tp, 2 * tp + fp + fn) * w
++                for (tp, fp, fn), w in zip(counts, weights)
++                if w
++            ) / sum(weights)
++        stats = {
++            "counts": [
++                {"label": cls, "tp": str(tp), "fp": str(fp), "fn": str(fn)}
++                for cls, (tp, fp, fn) in zip(labels, counts)
++            ]
++        }
++    return value, len(kept), stats
++
++
+ def verify(case, root, result):
+@@ -55,2 +134,4 @@ def verify(case, root, result):
+         "all_assessors",
++        "harmonic_mean_of_means",
++        "classification_f1",
+     }:
+@@ -84,2 +165,3 @@ def verify(case, root, result):
+     scored = 0
++    samples = []
+     for records in units.values():
+@@ -100,2 +182,10 @@ def verify(case, root, result):
+             vals.append(number(raw, source, plan["scale"]))
++        if method in {"harmonic_mean_of_means", "classification_f1"}:
++            weight = (
++                Decimal(str(cell(records[0], layout["weight_column"])))
++                if plan["reducer"] == "frequency_weighted_mean"
++                else Decimal(1)
++            )
++            samples.append((vals, weight))
++            continue
+         if any(v is None for v in vals):
+@@ -130,2 +220,7 @@ def verify(case, root, result):
+         scored += 1
++    extra = {}
++    if method in {"harmonic_mean_of_means", "classification_f1"}:
++        exact, scored, statistics = nonlinear(samples, plan)
++        numerator, denominator = Decimal(exact.numerator), Decimal(exact.denominator)
++        extra = {"method": method, "independent_statistics": statistics}
+     value = numerator / denominator
+@@ -137,2 +232,3 @@ def verify(case, root, result):
+         "status": "checked",
++        **extra,
+         "units": len(units),
