@@ -1,4 +1,5 @@
 """Контракты портов: monitoring_metric v2 неприкосновенен, km_result = run-report."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -6,9 +7,9 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from conftest import baseline_answer, layout_answer, metric_answer
 from helpers import FakeClient, make_package
+
 from laim_basket.errors import LayoutError
 
 MODULE_DIR = Path(__file__).resolve().parents[1]
@@ -47,8 +48,7 @@ def test_monitoring_metric_carries_consumer_fields(tmp_path, monkeypatch):
     assert metric["assessment_mode"] == "qa"
     assert metric["primary_validation"]["affects_monitoring"] is False
     source = metric["scoring"]["sources"][0]
-    assert set(source) == {"source_id", "column_name", "role", "normalization",
-                            "polarity"}
+    assert set(source) == {"source_id", "column_name", "role", "normalization", "polarity"}
     assert metric["scoring"]["missing_policy"] == "exclude_unit"
     assert metric["baseline"]["scale"] in ("ratio", "raw")
     assert isinstance(metric["baseline"]["value"], float)
@@ -68,9 +68,16 @@ def test_km_result_is_run_report(tmp_path, monkeypatch):
 
 
 def test_not_computable_still_publishes_umr(tmp_path, monkeypatch):
-    bad = metric_answer(sources=[{"column_id": "ZZ", "role": "final_score",
-                                   "normalization": "numeric",
-                                   "polarity": "direct"}])
+    bad = metric_answer(
+        sources=[
+            {
+                "column_id": "ZZ",
+                "role": "final_score",
+                "normalization": "numeric",
+                "polarity": "direct",
+            }
+        ]
+    )
     ports = _run_main(tmp_path, monkeypatch, [layout_answer()] + [bad] * 3)
     assert ports["monitoring_metric"]["status"] == "not_computable"
     assert len(ports["reference_umr"]) == 2
@@ -78,28 +85,30 @@ def test_not_computable_still_publishes_umr(tmp_path, monkeypatch):
 
 
 def test_official_baseline_missing_reason_code(tmp_path, monkeypatch):
-    ports = _run_main(tmp_path, monkeypatch, [
-        layout_answer(),
-        metric_answer()], baseline=[])
+    ports = _run_main(tmp_path, monkeypatch, [layout_answer(), metric_answer()], baseline=[])
     metric = ports["monitoring_metric"]
     assert metric["status"] == "not_computable"
     assert metric["reason_code"] == "official_baseline_missing"
     assert metric["baseline"]["recomputed_value"] == 0.5
     # km_result обязан согласоваться с monitoring_metric, а не рапортовать успех.
     assert ports["km_result"]["status"] == "not_computable"
-    assert any(w["code"] == "official_baseline_missing"
-               for w in ports["km_result"]["warnings"])
+    assert any(w["code"] == "official_baseline_missing" for w in ports["km_result"]["warnings"])
 
 
 def test_descriptor_source_files_match_disk():
     import json
+
     descriptor = json.loads((MODULE_DIR / "descriptor.json").read_text("utf-8"))
     listed = set(descriptor["script"]["runConfiguration"]["sourceFiles"])
     actual = {
         str(path.relative_to(MODULE_DIR))
         for path in MODULE_DIR.rglob("*.py")
         if "__pycache__" not in path.parts
-        and path.relative_to(MODULE_DIR).parts[0] != "tests"
+        and (
+            path.name == "main.py"
+            and path.parent == MODULE_DIR
+            or path.relative_to(MODULE_DIR).parts[0] == "laim_basket"
+        )
     }
     assert listed == actual
     assert all(port["name"] != "run_context" for port in descriptor["ports"])
@@ -114,8 +123,7 @@ def test_main_logs_basket_error_details_before_raising(tmp_path, monkeypatch, ca
     def failing_run_package(path, out_dir, client, sheet_name, agent_ci):
         raise LayoutError(
             "Канонический UMR не прошёл валидацию",
-            missing_required_values={"input_query": {"count": 2,
-                                                       "source_rows": [365, 366]}},
+            missing_required_values={"input_query": {"count": 2, "source_rows": [365, 366]}},
         )
 
     monkeypatch.setattr(main, "run_package", failing_run_package)

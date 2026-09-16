@@ -1,14 +1,18 @@
 """Клиент: проба response_format с фолбэком, repair-петля, счётчики."""
+
 from __future__ import annotations
 
 import json
 
-
 from laim_basket.config import LlmConfig
 from laim_basket.llm import client as client_module
 
-SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}},
-          "required": ["ok"], "additionalProperties": False}
+SCHEMA = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
 
 
 class _Response:
@@ -42,7 +46,8 @@ def test_response_format_probe_falls_back_on_400(tmp_path, monkeypatch):
     monkeypatch.setattr(client_module.requests, "post", fake_post)
     client = _client(tmp_path)
     result = client_module.request_structured(
-        client, [{"role": "user", "content": "?"}], SCHEMA, "probe")
+        client, [{"role": "user", "content": "?"}], SCHEMA, "probe"
+    )
     assert result == {"ok": True}
     assert "response_format" in bodies[0] and "response_format" not in bodies[1]
     assert client.structured_output is False
@@ -52,11 +57,12 @@ def test_response_format_probe_falls_back_on_400(tmp_path, monkeypatch):
 
 def test_response_format_success_sets_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        client_module.requests, "post",
-        lambda url, headers=None, json=None, timeout=None: _ok('{"ok": true}'))
+        client_module.requests,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: _ok('{"ok": true}'),
+    )
     client = _client(tmp_path)
-    client_module.request_structured(
-        client, [{"role": "user", "content": "?"}], SCHEMA, "task")
+    client_module.request_structured(client, [{"role": "user", "content": "?"}], SCHEMA, "task")
     assert client.structured_output is True
 
 
@@ -71,7 +77,8 @@ def test_repair_turn_sends_error_text_and_counts(tmp_path, monkeypatch):
     monkeypatch.setattr(client_module.requests, "post", fake_post)
     client = _client(tmp_path)
     result = client_module.request_structured(
-        client, [{"role": "user", "content": "?"}], SCHEMA, "task")
+        client, [{"role": "user", "content": "?"}], SCHEMA, "task"
+    )
     assert result == {"ok": True}
     assert client.repair_turns == 1 and client.calls == 2
     repair_message = requests_seen[1]["messages"][-1]["content"]
@@ -80,9 +87,41 @@ def test_repair_turn_sends_error_text_and_counts(tmp_path, monkeypatch):
 
 def test_think_block_is_stripped(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        client_module.requests, "post",
-        lambda url, headers=None, json=None, timeout=None:
-        _ok('<think>шум</think>{"ok": true}'))
+        client_module.requests,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: _ok('<think>шум</think>{"ok": true}'),
+    )
     client = _client(tmp_path)
     assert client_module.request_structured(
-        client, [{"role": "user", "content": "?"}], SCHEMA, "t") == {"ok": True}
+        client, [{"role": "user", "content": "?"}], SCHEMA, "t"
+    ) == {"ok": True}
+
+
+def test_partial_json_finish_length_increases_budget_without_repair(tmp_path, monkeypatch):
+    bodies = []
+
+    def post(url, headers=None, json=None, timeout=None):
+        bodies.append(dict(json))
+        if len(bodies) == 1:
+            return _Response(
+                200, {"choices": [{"finish_reason": "length", "message": {"content": '{"ok":'}}]}
+            )
+        return _ok('{"ok": true}')
+
+    monkeypatch.setattr(client_module.requests, "post", post)
+    monkeypatch.setattr(client_module.time, "sleep", lambda _: None)
+    client = _client(tmp_path)
+    assert client_module.request_structured(client, [], SCHEMA, "t") == {"ok": True}
+    assert bodies[1]["max_tokens"] > bodies[0]["max_tokens"]
+    assert client.repair_turns == 0 and client.transport_retries == 1
+
+
+def test_malformed_success_payload_is_a_transport_failure(tmp_path, monkeypatch):
+    import pytest
+
+    from laim_basket.errors import LlmError
+
+    monkeypatch.setattr(client_module.requests, "post", lambda *args, **kwargs: _Response(200, []))
+    monkeypatch.setattr(client_module.time, "sleep", lambda _: None)
+    with pytest.raises(LlmError):
+        _client(tmp_path).chat([], "t")

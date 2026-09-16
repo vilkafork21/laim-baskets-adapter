@@ -5,165 +5,46 @@
 КМ публикуется только заявленной в отчёте о валидации: цитата значения
 проверяется кодом, отсутствие значения в отчёте — дефект артефактов.
 """
+
 from __future__ import annotations
 
 import copy
+import json
 import logging
-import re
+from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
 
 import pandas as pd
 
 from .. import defaults
+from ..context import build_run_context as build_run_context
+from ..context import check_report_identity as check_report_identity
 from ..errors import (
+    BasketError,
     LayoutError,
     LlmError,
-    PackageError,
     SpecError,
     StructuredOutputError,
 )
 from ..evidence.workbook import workbook_evidence
 from ..journal import Journal
+from ..metric.baseline import BaselineResult, failed_baseline, select_baseline
 from ..metric.engine import evaluate
 from ..metric.resolve import (
     resolve_measurement_plan,
     vertically_merged_source,
 )
 from ..models import MeasurementPlan, ResolvedLayout, RunContext
-from ..metric.baseline import select_baseline, BaselineResult
 from ..publish import PublishedUmr, publish_umr
-from ..reading.docx_reader import read_document_paragraphs
-from ..reading.package_scan import scan_package
-from ..reading.xlsx_reader import read_workbook
 from ..resolve import resolve_layout
 from ..transform.canon import build_canon
 from ..transform.grouping import apply_grouping
 from ..transform.values import blank
 from .client import request_structured
-from .prompts import baseline_messages, layout_messages, metric_messages
+from .prompts import baseline_batches, layout_messages, metric_messages
 from .schemas import BASELINE_SCHEMA, LAYOUT_SCHEMA, METRIC_SCHEMA
 
 logger = logging.getLogger(__name__)
-
-# Порты документов узнаются по стабильной номенклатуре процесса валидации
-# (не пер-корзинное знание): нода получает канонические имена от main.py,
-# CLI-пакеты несут человеческие имена тех же трёх типов документов.
-_DOCUMENT_PORT_MARKERS = (
-    ("validation_report", ("validation_report", "валидац")),
-    ("development_report", ("development_report", "разработ")),
-    ("assessor_instruction", ("assessor_instruction", "инструкц", "размет")),
-)
-
-
-def _document_ports(names: list[str], kinds: dict[str, str]) -> dict[str, str]:
-    ports: dict[str, str] = {}
-    for name in names:
-        if kinds[name] == "document_txt":
-            ports[name] = "assessor_instruction"
-    for port, markers in _DOCUMENT_PORT_MARKERS:
-        if port in ports.values():
-            continue
-        matched = [
-            name for name in names
-            if name not in ports and any(marker in name.casefold() for marker in markers)
-        ]
-        if len(matched) == 1:
-            ports[matched[0]] = port
-    unassigned = [name for name in names if name not in ports]
-    missing = [port for port, _ in _DOCUMENT_PORT_MARKERS if port not in ports.values()]
-    if len(unassigned) == 1 and len(missing) == 1:
-        ports[unassigned[0]] = missing[0]
-    if len(ports) != 3:
-        raise PackageError(
-            "Не удалось сопоставить документы ролям (валидация/разработка/инструкция)",
-            documents=names, assigned=ports,
-        )
-    return ports
-
-
-_CI_TOKEN = re.compile(r"(?i)\bCI\d{6,}\b")
-
-
-def check_report_identity(context: RunContext, journal: Journal) -> None:
-    """CI-код в отчёте о валидации против basket_id: baseline берётся из отчёта
-    как есть, поэтому чужой отчёт обязан быть виден в журнале (LAIM-0188)."""
-    text = "\n".join(
-        paragraph
-        for document in context.documents if document["port"] == "validation_report"
-        for paragraph in document["paragraphs"]
-    )
-    tokens = sorted({token.upper() for token in _CI_TOKEN.findall(text)})
-    if not tokens:
-        logger.info("Отчёт о валидации не содержит CI-кода: идентичность корзины "
-                    "%s по отчёту не подтверждена", context.basket_id)
-    elif context.basket_id in tokens:
-        logger.info("Идентичность подтверждена: CI %s встречается в отчёте о валидации",
-                    context.basket_id)
-    else:
-        journal.warning(
-            "report_identity_mismatch",
-            f"отчёт о валидации упоминает {tokens}, корзина — {context.basket_id}: "
-            "возможен чужой отчёт; baseline взят из него без изменений",
-        )
-
-
-def _basket_id(package_name: str) -> str:
-    match = re.search(r"(?i)ci[0-9]+", package_name)
-    if match is None:
-        logger.warning(
-            "CI-код не найден в имени пакета %r — basket_id взят как есть: %r",
-            package_name, package_name,
-        )
-        return package_name
-    return match.group(0).upper()
-
-
-def build_run_context(package: str | Path, agent_ci: str = "") -> RunContext:
-    identity = (agent_ci or "").strip()
-    if identity and not re.fullmatch(r"CI[0-9]+", identity, re.IGNORECASE):
-        raise PackageError(
-            "Этап L. Ожидалось: agent_ci вида CI и цифры либо пустая строка. "
-            f"Получено: {identity!r}. Действие: исправьте настройку agent_ci.")
-    manifest = scan_package(package)
-    baskets = manifest["baskets"]
-    documents = manifest["documents"]
-    logger.info(
-        "Пакет %s: корзин %d %s, документов %d %s",
-        manifest["package_name"], len(baskets), baskets, len(documents), documents,
-    )
-    if len(baskets) != 1:
-        raise PackageError("Пакет должен содержать ровно одну XLSX-корзину", found=baskets)
-    if len(documents) != 3:
-        raise PackageError(
-            "Пакет должен содержать два DOCX-отчёта и инструкцию (DOCX или UTF-8 TXT)",
-            found=documents,
-        )
-    files_by_name = {item["name"]: item for item in manifest["files"]}
-    kinds = {name: files_by_name[name]["kind"] for name in documents}
-    ports = _document_ports(sorted(documents), kinds)
-    package_dir = Path(manifest["package_dir"])
-    order = {port: index for index, (port, _) in enumerate(_DOCUMENT_PORT_MARKERS)}
-    loaded_documents = tuple(sorted(
-        (
-            {
-                "port": ports[name],
-                "name": name,
-                "paragraphs": read_document_paragraphs(package_dir / name, kinds[name]),
-            }
-            for name in documents
-        ),
-        key=lambda document: order[document["port"]],
-    ))
-    basket_path = package_dir / baskets[0]
-    sheets = read_workbook(basket_path)
-    logger.info("Книга %s: листы %s", basket_path.name, list(sheets))
-    return RunContext(
-        basket_id=identity.upper() if identity else _basket_id(manifest["package_name"]),
-        file_hashes={item["name"]: item["sha256"] for item in manifest["files"]},
-        sheets=sheets,
-        documents=loaded_documents,
-    )
 
 
 @dataclass(frozen=True)
@@ -174,18 +55,19 @@ class LayoutOutcome:
     conversion: dict
 
 
-def _materialize(proposal: dict, ctx: RunContext, pinned_sheet: str,
-                 rejected_sheets: frozenset[str]):
-    layout = resolve_layout(proposal, ctx.sheets, ctx.basket_id,
-                            pinned_sheet, rejected_sheets)
+def _materialize(
+    proposal: dict, ctx: RunContext, pinned_sheet: str, rejected_sheets: frozenset[str]
+):
+    layout = resolve_layout(proposal, ctx.sheets, ctx.basket_id, pinned_sheet, rejected_sheets)
     sheet = ctx.sheets[layout.sheet_name]
     grouped = apply_grouping(sheet, layout.region, layout.transform_config())
     frame, conversion = build_canon(grouped, layout.region, layout.transform_config())
     return layout, frame, conversion
 
 
-def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
-               rejected_sheets: frozenset[str]) -> LayoutOutcome:
+def run_layout(
+    client, ctx: RunContext, journal: Journal, pinned_sheet: str, rejected_sheets: frozenset[str]
+) -> LayoutOutcome:
     evidence = workbook_evidence(ctx.sheets)
     resolved: dict = {}
     recoverable: dict = {}
@@ -209,8 +91,11 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
                 ),
             )
             recoverable.update(
-                error=error, proposal=copy.deepcopy(proposal),
-                layout=layout, frame=frame, conversion=conversion,
+                error=error,
+                proposal=copy.deepcopy(proposal),
+                layout=layout,
+                frame=frame,
+                conversion=conversion,
                 dropped={"undecodable_dialogue_blob": list(undecodable)},
             )
             raise error
@@ -228,8 +113,7 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
             # Построчные дефекты (пустой input_query, строка вне группы)
             # устранимы отбросом строк после исчерпания repair — фиксируем
             # кандидата на фолбэк. Структурные нарушения чинит только модель.
-            blank_query = set(
-                missing_values.get("input_query", {}).get("row_positions", []))
+            blank_query = set(missing_values.get("input_query", {}).get("row_positions", []))
             blank_group = {
                 position
                 for violation in validation["context_violations"]
@@ -240,41 +124,51 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
                 not validation["missing_required"]
                 and not validation["type_violations"]
                 and set(missing_values) <= {"input_query"}
-                and all(violation["reason"] == "blank_group"
-                        for violation in validation["context_violations"])
+                and all(
+                    violation["reason"] == "blank_group"
+                    for violation in validation["context_violations"]
+                )
             )
             bad = blank_query | blank_group
             if row_scoped and bad and len(bad) < len(frame):
                 keep = [position not in bad for position in range(len(frame))]
                 kept = frame.loc[keep].reset_index(drop=True)
                 dropped = {
-                    kind: sorted(int(frame["source_row_id"].iloc[position])
-                                 for position in positions)
-                    for kind, positions in (("blank_input_query", blank_query),
-                                            ("blank_group", blank_group - blank_query))
+                    kind: sorted(
+                        int(frame["source_row_id"].iloc[position]) for position in positions
+                    )
+                    for kind, positions in (
+                        ("blank_input_query", blank_query),
+                        ("blank_group", blank_group - blank_query),
+                    )
                     if positions
                 }
                 fixed = copy.deepcopy(conversion)
                 fixed["row_accounting"]["canon_rows"] = len(kept)
                 fixed["row_accounting"]["dropped_invalid_rows"] = sorted(
-                    row for rows in dropped.values() for row in rows)
+                    row for rows in dropped.values() for row in rows
+                )
                 fixed["umr_validation"]["status"] = "passed"
                 fixed["umr_validation"]["missing_required_values"] = {}
                 fixed["umr_validation"]["context_violations"] = []
                 recoverable.update(
-                    error=error, proposal=copy.deepcopy(proposal),
-                    layout=layout, frame=kept, conversion=fixed,
+                    error=error,
+                    proposal=copy.deepcopy(proposal),
+                    layout=layout,
+                    frame=kept,
+                    conversion=fixed,
                     dropped=dropped,
                 )
             raise error
-        resolved.update(proposal=proposal, layout=layout, frame=frame,
-                         conversion=conversion)
+        resolved.update(proposal=proposal, layout=layout, frame=frame, conversion=conversion)
 
     try:
         request_structured(
             client,
             layout_messages(evidence, ctx.documents, pinned_sheet, rejected_sheets),
-            LAYOUT_SCHEMA, "layout", validate_extra=validate,
+            LAYOUT_SCHEMA,
+            "layout",
+            validate_extra=validate,
         )
     except (LayoutError, StructuredOutputError, LlmError) as exc:
         if not recoverable:
@@ -297,15 +191,18 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
             raise SpecError(
                 "Разметка отбрасывает больше половины строк корзины — обязательные "
                 f"поля спеки не собраны: {recovered_error}",
-                dropped_rows=dropped_rows, kept_rows=int(kept_rows),
+                dropped_rows=dropped_rows,
+                kept_rows=int(kept_rows),
                 **recovered_error.details,
             ) from recovered_error
         for kind, rows in recoverable["dropped"].items():
             journal.dropped(kind, rows)
-        resolved.update(proposal=recoverable["proposal"],
-                         layout=recoverable["layout"],
-                         frame=recoverable["frame"],
-                         conversion=recoverable["conversion"])
+        resolved.update(
+            proposal=recoverable["proposal"],
+            layout=recoverable["layout"],
+            frame=recoverable["frame"],
+            conversion=recoverable["conversion"],
+        )
     for field in ("session_id", "query_id"):
         entry = resolved["conversion"]["identity"].get(field, {})
         if "source_rejected" in entry:
@@ -322,19 +219,36 @@ def _column_inventory(sheet, frame, layout: ResolvedLayout) -> list[dict]:
     for column_id, name in layout.column_names.items():
         values = frame[name].tolist()
         present = [value for value in values if not blank(value)]
-        result.append({
-            "column_id": column_id,
-            "canonical_raw_name": name,
-            "non_null": len(present),
-            "samples": [str(value)[:120] for value in present[:3]],
-            "formula_rows": list(layout.formula_rows.get(column_id, ())),
-            "vertically_merged": vertically_merged_source(sheet, layout, column_id),
-        })
+        counts = Counter(str(value) for value in present)
+        categorical = len(counts) <= 64 and all(len(value) <= 200 for value in counts)
+        formula_rows = list(layout.formula_rows.get(column_id, ()))
+        column0 = layout.region.column_letters.index(column_id)
+        result.append(
+            {
+                "blank_count": len(values) - len(present),
+                "formula_count": len(formula_rows),
+                "formula_samples": [
+                    {"row": row, "formula": sheet.formulas.get((row - 1, column0), "")}
+                    for row in formula_rows[:3]
+                ],
+                "formula_rows_truncated": len(formula_rows) > 20,
+                "unique_values": dict(counts) if categorical else {},
+                "unique_values_complete": categorical,
+                "unique_count": len(counts),
+                "column_id": column_id,
+                "canonical_raw_name": name,
+                "non_null": len(present),
+                "samples": [str(value)[:120] for value in present[:3]],
+                "formula_rows": formula_rows[:20],
+                "vertically_merged": vertically_merged_source(sheet, layout, column_id),
+            }
+        )
     return result
 
 
-def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
-               journal: Journal) -> tuple[MeasurementPlan, dict, PublishedUmr]:
+def run_metric(
+    client, ctx: RunContext, outcome: LayoutOutcome, journal: Journal
+) -> tuple[MeasurementPlan, dict, PublishedUmr]:
     layout, frame = outcome.layout, outcome.frame
     sheet = ctx.sheets[layout.sheet_name]
     resolved: dict = {}
@@ -348,13 +262,21 @@ def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
         resolved.update(plan=plan, km=km, published=published)
 
     base_messages = metric_messages(
-        _column_inventory(sheet, frame, layout), ctx.documents,
-        {"grouping": layout.grouping["kind"],
-         "first_data_row": layout.first_data_row,
-         "last_data_row": layout.last_data_row},
+        _column_inventory(sheet, frame, layout),
+        ctx.documents,
+        {
+            "grouping": layout.grouping["kind"],
+            "first_data_row": layout.first_data_row,
+            "last_data_row": layout.last_data_row,
+        },
     )
-    request_structured(client, base_messages, METRIC_SCHEMA, "metric",
-                       validate_extra=validate)
+    request_structured(client, base_messages, METRIC_SCHEMA, "metric", validate_extra=validate)
+    if resolved["plan"].missing_values:
+        journal.warning(
+            "declared_missing_values",
+            f"Явные нечисловые маркеры пропуска: {resolved['plan'].missing_values}; "
+            "проверьте основание исключений по методике.",
+        )
     if resolved["km"]["percent_domain_columns"]:
         journal.warning(
             "score_domain_percent",
@@ -362,26 +284,48 @@ def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
             f"{resolved['km']['percent_domain_columns']} заданы в процентных "
             f"пунктах при шкале {resolved['plan'].scale} — приведены к долям",
         )
-    formula_sources = {source["column_id"]: list(layout.formula_rows[source["column_id"]])
-                       for source in resolved["plan"].sources
-                       if source["column_id"] in layout.formula_rows}
+    formula_sources = {
+        source["column_id"]: list(layout.formula_rows[source["column_id"]])
+        for source in resolved["plan"].sources
+        if source["column_id"] in layout.formula_rows
+    }
     if formula_sources:
         journal.warning(
             "formula_score_cached",
-            f"Этап S: использован кеш построчных формул {formula_sources}; "
+            f"Этап S: использован кеш построчных формул "
+            f"{ {column: len(rows) for column, rows in formula_sources.items()} } (колонка: число строк); "
             "формулы не пересчитывались. Перед загрузкой пересчитайте и сохраните Excel.",
         )
     return resolved["plan"], resolved["km"], resolved["published"]
 
 
-def run_baseline(client, ctx: RunContext, selected_sheet: str,
-                 plan: MeasurementPlan | None = None) -> BaselineResult:
+def run_baseline(
+    client, ctx: RunContext, selected_sheet: str, plan: MeasurementPlan | None = None
+) -> BaselineResult:
     report = next(document for document in ctx.documents if document["port"] == "validation_report")
-    candidates = request_structured(
-        client, baseline_messages(report, list(ctx.sheets), plan.metric_name if plan else ""),
-        BASELINE_SCHEMA, "baseline",
+    candidates, failures = [], []
+    for index, messages in enumerate(
+        baseline_batches(report, list(ctx.sheets), plan.metric_name if plan else ""), 1
+    ):
+        try:
+            candidates.extend(request_structured(client, messages, BASELINE_SCHEMA, "baseline"))
+        except BasketError as exc:
+            failures.append(f"часть {index}: {exc.reason_code}: {exc}")
+    # Перекрытие длинного абзаца не размножает одно и то же упоминание.
+    candidates = list(
+        {json.dumps(c, sort_keys=True, ensure_ascii=False): c for c in candidates}.values()
     )
-    return select_baseline(
-        candidates, report["paragraphs"], selected_sheet=selected_sheet,
-        metric_name=plan.metric_name if plan else "", scale=plan.scale if plan else None,
+    result = select_baseline(
+        candidates,
+        report["paragraphs"],
+        selected_sheet=selected_sheet,
+        metric_name=plan.metric_name if plan else "",
+        scale=plan.scale if plan else None,
     )
+    if failures:
+        return failed_baseline(
+            "Отчёт извлечён не полностью: " + "; ".join(failures),
+            candidates=result.candidates,
+            rejected=result.rejected,
+        )
+    return result

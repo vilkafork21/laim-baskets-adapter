@@ -1,13 +1,14 @@
 """Движок КМ: домен оценок единиц против объявленной шкалы (аудит LAIM-0189)."""
+
 from __future__ import annotations
 
 import pytest
-
 from conftest import baseline_answer, layout_answer, metric_answer
 from helpers import make_workbook
+
 from laim_basket.errors import NotEvaluableError
-from laim_basket.metric.engine import evaluate
 from laim_basket.metric.baseline import attach_baseline, select_baseline
+from laim_basket.metric.engine import evaluate
 from laim_basket.metric.resolve import resolve_measurement_plan
 from laim_basket.reading.xlsx_reader import read_workbook
 from laim_basket.resolve import resolve_layout
@@ -17,8 +18,17 @@ from laim_basket.transform.grouping import apply_grouping
 
 def _prepared(tmp_path, scores):
     path = tmp_path / "b.xlsx"
-    make_workbook(path, {"Лист1": {"rows": [
-        ["q", "a", "m"], *[[f"в{i}", f"о{i}", score] for i, score in enumerate(scores)]]}})
+    make_workbook(
+        path,
+        {
+            "Лист1": {
+                "rows": [
+                    ["q", "a", "m"],
+                    *[[f"в{i}", f"о{i}", score] for i, score in enumerate(scores)],
+                ]
+            }
+        },
+    )
     sheets = read_workbook(path)
     layout = resolve_layout(layout_answer(), sheets, "CI09000001", "", frozenset())
     sheet = sheets["Лист1"]
@@ -29,8 +39,13 @@ def _prepared(tmp_path, scores):
 
 def _reported_plan(layout, frame, sheet, raw: str, scale="percent"):
     plan = resolve_measurement_plan(metric_answer(scale=scale), layout, frame, sheet)
-    baseline = select_baseline(baseline_answer(raw, "p001"), ("Accuracy " + raw,),
-                               selected_sheet=layout.sheet_name, metric_name="Accuracy", scale=scale)
+    baseline = select_baseline(
+        baseline_answer(raw, "p001"),
+        ("Accuracy " + raw,),
+        selected_sheet=layout.sheet_name,
+        metric_name="Accuracy",
+        scale=scale,
+    )
     return attach_baseline(plan, baseline)
 
 
@@ -50,14 +65,14 @@ def test_percent_point_scores_are_normalized_to_ratio(tmp_path):
     assert km["percent_domain_columns"] == ["C"]
 
 
-def test_ratio_scores_under_percent_scale_are_left_alone(tmp_path):
+def test_bare_values_under_percent_scale_are_percent_points(tmp_path):
     layout, frame, sheet = _prepared(tmp_path, [1, 0, 1])
     plan = _percent_plan(layout, frame, sheet, "66,7%")
 
     scored, km = evaluate(frame, layout, plan)
 
-    assert scored["main_metric"].tolist() == [1.0, 0.0, 1.0]
-    assert km["percent_domain_columns"] == []
+    assert scored["main_metric"].tolist() == [0.01, 0.0, 0.01]
+    assert km["percent_domain_columns"] == ["C"]
 
 
 def test_scores_above_hundred_are_not_a_percent_domain(tmp_path):
@@ -68,17 +83,12 @@ def test_scores_above_hundred_are_not_a_percent_domain(tmp_path):
         evaluate(frame, layout, plan)
 
 
-def test_percent_point_scores_under_ratio_scale_are_normalized_too(tmp_path):
-    # Шкала ratio, а оценки 70/100: доля не бывает больше единицы — это те же
-    # процентные пункты, и модель лишь иначе назвала шкалу.
+def test_percent_points_under_ratio_scale_require_repair(tmp_path):
+    # Не угадываем шкалу по максимуму: одна новая строка не меняет прежние оценки.
     layout, frame, sheet = _prepared(tmp_path, [70, 100, 85])
     plan = _reported_plan(layout, frame, sheet, "0.85", "ratio")
-
-    scored, km = evaluate(frame, layout, plan)
-
-    assert scored["main_metric"].tolist() == [0.7, 1.0, 0.85]
-    assert km["reconciliation"]["status"] == "match"
-    assert km["percent_domain_columns"] == ["C"]
+    with pytest.raises(NotEvaluableError, match="явной шкале"):
+        evaluate(frame, layout, plan)
 
 
 def test_raw_scale_keeps_scores_above_one(tmp_path):

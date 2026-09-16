@@ -6,14 +6,15 @@ import logging
 from decimal import Decimal
 
 from ..errors import MeasurementPlanError, NotEvaluableError
-from .resolve import decimal_value, reported_quantum
 from ..models import MeasurementPlan, ResolvedLayout
-from ..transform.values import blank as _blank, normalize_key
+from ..transform.values import blank as _blank
+from ..transform.values import normalize_key
+from .resolve import decimal_value, reported_quantum
 
 logger = logging.getLogger(__name__)
 
 
-def _numeric(value: object) -> Decimal | None:
+def _numeric(value: object, scale: str) -> Decimal | None:
     if _blank(value):
         return None
     if isinstance(value, bool):
@@ -21,26 +22,27 @@ def _numeric(value: object) -> Decimal | None:
     text = str(value).strip()
     percent = text.endswith("%")
     result = decimal_value(text.rstrip("%").strip())
-    return result / 100 if percent else result
+    if percent and scale == "raw":
+        raise NotEvaluableError("Процентная ячейка несовместима со шкалой raw")
+    return result / 100 if percent or scale == "percent" else result
 
 
-def _normalizer(source: dict[str, object]):
+def _normalizer(source: dict[str, object], scale: str):
     normalization = source["normalization"]
     if normalization == "label":
         return lambda value: None if _blank(value) else normalize_key(value)
     if normalization == "numeric":
+
         def base(value: object) -> Decimal | None:
             try:
-                return _numeric(value)
-            except MeasurementPlanError:
-                # Нечисловой текст в колонке оценки — пропуск в данных, а не
-                # поломка плана: решение принимает missing_policy, как для пустой
-                # ячейки. Иначе одна ячейка убивает разбор всей корзины.
-                logger.warning(
-                    "Колонка %s: нечисловое значение %r трактуется как пропуск оценки",
-                    source["column_id"], str(value)[:80],
-                )
-                return None
+                return _numeric(value, scale)
+            except MeasurementPlanError as exc:
+                raise NotEvaluableError(
+                    "Нечисловой score при normalization=numeric; задайте явный value_map",
+                    column_id=source["column_id"],
+                    value=str(value)[:120],
+                    repair_hint="Используйте все unique_values инвентаря; не исключайте текст как пропуск",
+                ) from exc
     else:
         lookup = {normalize_key(key): decimal_value(value) for key, value in normalization.items()}
 
@@ -49,8 +51,10 @@ def _normalizer(source: dict[str, object]):
                 return None
             key = normalize_key(value)
             if key not in lookup:
-                raise NotEvaluableError("value_map не покрывает фактическое значение", value=str(value)[:80])
-            return lookup[key]
+                raise NotEvaluableError(
+                    "value_map не покрывает фактическое значение", value=str(value)[:80]
+                )
+            return lookup[key] / 100 if scale == "percent" else lookup[key]
 
     if source["polarity"] == "direct":
         return base
@@ -66,25 +70,6 @@ def _normalizer(source: dict[str, object]):
     return inverted
 
 
-_PERCENT_DOMAIN_MAX = Decimal(100)
-
-
-def _percent_domain(values: list[object], column_id: str) -> list[object] | None:
-    """Оценки в процентных пунктах (0-100 без знака %) при шкале доли
-    (percent или ratio) приводятся к долям; иначе main_metric ушёл бы
-    потребителям на 0-100, а пересчёт КМ — умноженным на 100 (LAIM-0189).
-    Шкала raw (оценка 0-2 и подобные) не трогается."""
-    present = [value for value in values if value is not None]
-    if not present or max(present) <= 1:
-        return None
-    if max(present) > _PERCENT_DOMAIN_MAX:
-        raise NotEvaluableError(
-            "Оценки колонки выходят за домен percent (0-100)",
-            column_id=column_id, max_value=str(max(present)),
-        )
-    return [None if value is None else value / _PERCENT_DOMAIN_MAX for value in values]
-
-
 def source_values(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> dict[str, list[object]]:
     return {column_id: values for column_id, values, _ in _sources(frame, layout, plan)}
 
@@ -92,19 +77,43 @@ def source_values(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> dict[
 def _sources(frame, layout: ResolvedLayout, plan: MeasurementPlan):
     for source in plan.sources:
         column_id = source["column_id"]
-        normalizer = _normalizer(source)
-        values = [normalizer(value) for value in frame[layout.column_names[column_id]].tolist()]
-        normalized = None
-        if plan.scale in ("percent", "ratio") and source["normalization"] == "numeric":
-            normalized = _percent_domain(values, column_id)
-        yield column_id, normalized if normalized is not None else values, normalized is not None
+        normalizer = _normalizer(source, plan.scale)
+        raw = frame[layout.column_names[column_id]].tolist()
+        missing_tokens = {normalize_key(value) for value in plan.missing_values.get(column_id, ())}
+        values = [
+            None if normalize_key(value) in missing_tokens else normalizer(value) for value in raw
+        ]
+        numeric = source["normalization"] != "label"
+        if numeric and plan.scale in ("ratio", "percent"):
+            invalid = [
+                str(value)
+                for value in values
+                if value is not None and not Decimal(0) <= value <= Decimal(1)
+            ]
+            if invalid:
+                raise NotEvaluableError(
+                    "Оценки не соответствуют явной шкале плана S",
+                    column_id=column_id,
+                    scale=plan.scale,
+                    invalid=invalid[:10],
+                    repair_hint="Уточните scale: ratio 0..1, percent 0..100, raw для иной шкалы",
+                )
+        percent = numeric and (
+            plan.scale == "percent"
+            or any(isinstance(value, str) and value.rstrip().endswith("%") for value in raw)
+        )
+        yield column_id, values, percent
 
 
-def _unit_records(frame, values: dict[str, list[object]], plan: MeasurementPlan) -> list[dict[str, object]]:
+def _unit_records(
+    frame, values: dict[str, list[object]], plan: MeasurementPlan
+) -> list[dict[str, object]]:
     if plan.evaluation_unit == "turn":
         return [
             {
-                "values": {column: column_values[index] for column, column_values in values.items()},
+                "values": {
+                    column: column_values[index] for column, column_values in values.items()
+                },
                 "weight": decimal_value(frame["input_query_count"].iloc[index]),
                 "rows": [index],
             }
@@ -124,11 +133,14 @@ def _unit_records(frame, values: dict[str, list[object]], plan: MeasurementPlan)
     for group, indexes in groups.items():
         unit_values = {}
         for column, column_values in values.items():
-            present = {column_values[index] for index in indexes if column_values[index] is not None}
+            present = {
+                column_values[index] for index in indexes if column_values[index] is not None
+            }
             if len(present) > 1:
                 raise NotEvaluableError(
                     "Источник КМ не константен внутри dialogue",
-                    group=str(group), column_id=column,
+                    group=str(group),
+                    column_id=column,
                 )
             unit_values[column] = next(iter(present)) if present else None
         if plan.reducer == "frequency_weighted_mean":
@@ -210,14 +222,18 @@ def _published_scale(value: Decimal, scale: str) -> Decimal:
     return value * 100 if scale == "percent" else value
 
 
-def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[object, dict[str, object]]:
+def evaluate(
+    frame, layout: ResolvedLayout, plan: MeasurementPlan
+) -> tuple[object, dict[str, object]]:
     sources = list(_sources(frame, layout, plan))
     values = {column_id: column_values for column_id, column_values, _ in sources}
     percent_columns = [column_id for column_id, _, normalized in sources if normalized]
     if percent_columns:
         logger.warning(
             "Колонки %s несут оценки в процентных пунктах при шкале %s — "
-            "приведены к долям делением на 100", percent_columns, plan.scale,
+            "приведены к долям делением на 100",
+            percent_columns,
+            plan.scale,
         )
     records = _unit_records(frame, values, plan)
     scores = [_score(record, plan) for record in records]
@@ -229,41 +245,10 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
     if any(weight <= 0 for weight in weights):
         raise NotEvaluableError("Вес должен быть положительным")
     total_weight = sum(weights, Decimal(0))
-    recomputed = sum(
-        score * weight for (_record, score), weight in zip(scored, weights)
-    ) / total_weight
-    published_recomputed = _published_scale(recomputed, plan.scale)
-    # КМ — только заявленная в отчёте о валидации: без неё value и вердикт
-    # пусты, пересчёт остаётся информационным полем.
-    final_value = plan.reported_value
-    verdict = None
-    if plan.threshold is not None and final_value is not None:
-        if plan.comparator == ">=":
-            verdict = "passed" if final_value >= plan.threshold else "failed"
-        else:
-            verdict = "passed" if final_value <= plan.threshold else "failed"
-    reconciliation = "not_applicable"
-    difference = None
-    if plan.reported_value is not None:
-        quantum = reported_quantum(plan)
-        reconciliation = (
-            "match"
-            if abs(plan.reported_value - published_recomputed) <= quantum
-            else "mismatch"
-        )
-        difference = plan.reported_value - published_recomputed
-        logger.info(
-            "Сверка КМ: пересчёт %s, заявлено в отчёте %s, допуск %s -> %s (расхождение %s)",
-            published_recomputed, plan.reported_value, quantum, reconciliation, difference,
-        )
-    else:
-        logger.info("Отчёт о валидации не объявил КМ: value пуст, информационный "
-                    "пересчёт %s", published_recomputed)
-    logger.info(
-        "Оценено единиц %d из %d, суммарный вес %s, вердикт по порогу %s",
-        len(scored), len(records), total_weight, verdict,
+    recomputed = (
+        sum(score * weight for (_record, score), weight in zip(scored, weights)) / total_weight
     )
-
+    published_recomputed = _published_scale(recomputed, plan.scale)
     scored_frame = frame.copy()
     per_row: list[float | None] = [None] * len(frame)
     for record, score in zip(records, scores):
@@ -277,22 +262,42 @@ def evaluate(frame, layout: ResolvedLayout, plan: MeasurementPlan) -> tuple[obje
         "excluded_units": len(records) - len(scored),
         "weight_sum": float(total_weight),
     }
-    # Внутренняя сводка прогона: контракт монитора собирает main.py из плана,
-    # а журнал прогона — pipeline. Здесь только то, что они реально читают.
     km = {
         "recomputed_value": float(published_recomputed),
+        "recomputed_exact": str(published_recomputed),
         "coverage": coverage,
+        "percent_domain_columns": percent_columns,
+    }
+    return scored_frame, reconcile(km, plan)
+
+
+def reconcile(km: dict, plan: MeasurementPlan) -> dict:
+    """Присоединить K к уже рассчитанному S, не трогая оценки и выборку."""
+    recomputed = Decimal(km.get("recomputed_exact", str(km["recomputed_value"])))
+    declared = plan.reported_value
+    difference = None if declared is None else declared - recomputed
+    status = (
+        "not_applicable"
+        if difference is None
+        else ("match" if abs(difference) <= reported_quantum(plan) else "mismatch")
+    )
+    verdict = None
+    if declared is not None and plan.threshold is not None:
+        passed = (
+            declared >= plan.threshold if plan.comparator == ">=" else declared <= plan.threshold
+        )
+        verdict = "passed" if passed else "failed"
+    return {
+        **km,
         "reconciliation": {
-            "status": reconciliation,
-            "difference": float(difference) if difference is not None else None,
+            "status": status,
+            "difference": None if difference is None else float(difference),
         },
         "threshold_verdict": verdict,
-        "percent_domain_columns": percent_columns,
         "main_metric": {
             "name": plan.metric_name,
-            "value": float(final_value) if final_value is not None else None,
-            "recomputed_value": float(published_recomputed),
+            "value": None if declared is None else float(declared),
+            "recomputed_value": float(recomputed),
             "scale": plan.scale,
         },
     }
-    return scored_frame, km

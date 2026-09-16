@@ -3,12 +3,14 @@
 Проверяется исполнимость маппинга и форма данных — не честность модели.
 Границами данных и режимом оценки владеет только код.
 """
+
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 
 import jsonschema
-from openpyxl.utils import column_index_from_string
+from openpyxl.utils import column_index_from_string, get_column_letter
 
 from .errors import LayoutError
 from .llm.schemas import LAYOUT_SCHEMA
@@ -16,8 +18,8 @@ from .models import ResolvedLayout
 from .reading.formulas import vertical_aggregate_cells
 from .reading.xlsx_reader import RawSheet
 from .transform.canon import raw_column_names, reference_answer_names
-from .transform.values import blank
 from .transform.region import build_region
+from .transform.values import blank
 
 
 def _column_index(address: str, width: int, path: str) -> int:
@@ -58,7 +60,9 @@ def _addresses(proposal: dict) -> list[tuple[str, str]]:
     return result
 
 
-def _materialize(proposal: dict, sheet: RawSheet, region) -> tuple[dict, dict, dict | None, dict | None]:
+def _materialize(
+    proposal: dict, sheet: RawSheet, region
+) -> tuple[dict, dict, dict | None, dict | None]:
     """Адреса предложения -> внутренние роли на именах колонок региона."""
 
     def name_of(address: str, path: str) -> str:
@@ -103,8 +107,10 @@ def _materialize(proposal: dict, sheet: RawSheet, region) -> tuple[dict, dict, d
         blob["column"] = name_of(blob["column"], "dialogue_blob.column")
     weight = None
     if proposal["weight_column"] is not None:
-        weight = {"source": name_of(proposal["weight_column"], "weight"),
-                  "column_id": proposal["weight_column"]}
+        weight = {
+            "source": name_of(proposal["weight_column"], "weight"),
+            "column_id": proposal["weight_column"],
+        }
     return roles, grouping, blob, weight
 
 
@@ -116,7 +122,8 @@ def _prove_roles(roles: dict, grouping: dict, blob: dict | None) -> None:
         if blob is None or input_source != blob_source:
             raise LayoutError(
                 "blob_row требует общий источник input_query и dialogue_blob",
-                input_query_source=input_source, dialogue_blob_source=blob_source,
+                input_query_source=input_source,
+                dialogue_blob_source=blob_source,
             )
         if roles["output_answer"] is not None:
             raise LayoutError(
@@ -135,16 +142,22 @@ def _prove_roles(roles: dict, grouping: dict, blob: dict | None) -> None:
             continue
         source = value["source"]
         if source in claimed:
-            raise LayoutError("Одна колонка получила две канонические роли",
-                              column=source, roles=[claimed[source], name])
+            raise LayoutError(
+                "Одна колонка получила две канонические роли",
+                column=source,
+                roles=[claimed[source], name],
+            )
         claimed[source] = name
     output = roles["output_answer"]
     if isinstance(output, dict):
         output_sources = output.get("coalesce") or [output["source"]]
         for source in output_sources:
             if source in claimed:
-                raise LayoutError("Одна колонка получила две канонические роли",
-                                  column=source, roles=[claimed[source], "output_answer"])
+                raise LayoutError(
+                    "Одна колонка получила две канонические роли",
+                    column=source,
+                    roles=[claimed[source], "output_answer"],
+                )
             claimed[source] = "output_answer"
     for index, source in enumerate(roles["reference_answers"]):
         if source in claimed:
@@ -152,13 +165,18 @@ def _prove_roles(roles: dict, grouping: dict, blob: dict | None) -> None:
         claimed[source] = f"reference_answers[{index}]"
 
     session_role = roles.get("session_id")
-    if (kind == "column" and isinstance(session_role, dict)
-            and session_role["source"] != grouping["column"]):
+    if (
+        kind == "column"
+        and isinstance(session_role, dict)
+        and session_role["source"] != grouping["column"]
+    ):
         raise LayoutError("roles.session_id и grouping.column должны совпадать")
-    if (kind == "column" and grouping["column"] in claimed
-            and claimed[grouping["column"]] not in {"query_id", "session_id"}):
-        grouping.update(kind="none", column=None)
-        kind = "none"
+    if (
+        kind == "column"
+        and grouping["column"] in claimed
+        and claimed[grouping["column"]] not in {"query_id", "session_id"}
+    ):
+        raise LayoutError("Колонка группировки занята другой ролью", column=grouping["column"])
     if kind == "column" and grouping["column"] is None:
         raise LayoutError("grouping=column требует column")
 
@@ -183,9 +201,10 @@ def _prove_references(region, roles: dict) -> None:
             raise LayoutError(
                 "Колонка эталона содержит только числовые значения — это оценка, "
                 "а не reference_answer",
-                column=source, samples=[str(value) for value in present[:3]],
+                column=source,
+                samples=[str(value) for value in present[:3]],
                 repair_hint="убери колонку из reference_answers; числовые оценки "
-                            "назначает план метрики",
+                "назначает план метрики",
             )
     assessor = roles.get("assessor_id")
     if isinstance(assessor, dict):
@@ -224,49 +243,63 @@ def _prove_weight(sheet: RawSheet, region, weight: dict | None) -> None:
     if invalid:
         raise LayoutError(
             "Weight должен содержать только положительные целые значения без Excel-формул",
-            column=source, invalid=invalid[:10],
+            column=source,
+            invalid=invalid[:10],
         )
 
 
 def _data_bounds(sheet: RawSheet, proposal: dict, first_data0: int) -> tuple[int, int]:
     """Границы данных по непустым input_query, merge и формульным итогам."""
-    query_index = _column_index(proposal["roles"]["input_query"], sheet.n_cols,
-                                "roles.input_query")
+    query_index = _column_index(proposal["roles"]["input_query"], sheet.n_cols, "roles.input_query")
     # Строка с вертикальным агрегатом в любой колонке — футер таблицы, даже
     # если под запросами стоит метка «ИТОГО».
     footer_rows = {row for row, _column in vertical_aggregate_cells(sheet.formulas)}
     candidates = [
-        row for row in range(first_data0, sheet.n_rows)
+        row
+        for row in range(first_data0, sheet.n_rows)
         if not blank(sheet.grid[row][query_index]) and row not in footer_rows
     ]
     for row1, col1, row2, _col2 in sheet.merged:
-        if row1 >= first_data0 and col1 <= query_index <= _col2 and not blank(sheet.grid[row1][col1]):
+        if (
+            row1 >= first_data0
+            and col1 <= query_index <= _col2
+            and not blank(sheet.grid[row1][col1])
+        ):
             candidates.append(row2)
     if not candidates:
         raise LayoutError("В колонке input_query нет строк данных")
     return query_index, min(max(candidates), sheet.n_rows - 1)
 
 
-def resolve_layout(proposal: dict, sheets: dict[str, RawSheet], basket_id: str,
-                   pinned_sheet: str, rejected_sheets: frozenset[str]) -> ResolvedLayout:
+def resolve_layout(
+    proposal: dict,
+    sheets: dict[str, RawSheet],
+    basket_id: str,
+    pinned_sheet: str,
+    rejected_sheets: frozenset[str],
+) -> ResolvedLayout:
     try:
         jsonschema.validate(proposal, LAYOUT_SCHEMA)
     except jsonschema.ValidationError as exc:
-        raise LayoutError(f"Layout не соответствует схеме: {exc.message}",
-                          path=exc.json_path) from exc
+        raise LayoutError(
+            f"Layout не соответствует схеме: {exc.message}", path=exc.json_path
+        ) from exc
+    proposal = deepcopy(proposal)
     sheet_name = proposal["sheet_name"]
     if pinned_sheet and sheet_name != pinned_sheet:
-        raise LayoutError("Оператор закрепил лист — выбери именно его",
-                          pinned=pinned_sheet, actual=sheet_name)
+        raise LayoutError(
+            "Оператор закрепил лист — выбери именно его", pinned=pinned_sheet, actual=sheet_name
+        )
     if sheet_name in rejected_sheets:
-        raise LayoutError("Лист уже отвергнут, выбери другой",
-                          rejected=sorted(rejected_sheets),
-                          available=sorted(set(sheets) - rejected_sheets))
+        raise LayoutError(
+            "Лист уже отвергнут, выбери другой",
+            rejected=sorted(rejected_sheets),
+            available=sorted(set(sheets) - rejected_sheets),
+        )
     if sheet_name not in sheets:
-        raise LayoutError("Выбран неизвестный лист", sheet=sheet_name,
-                          available=list(sheets))
+        raise LayoutError("Выбран неизвестный лист", sheet=sheet_name, available=list(sheets))
     sheet = sheets[sheet_name]
-    if proposal["grouping"]["kind"] != "column":
+    if proposal["grouping"]["kind"] not in ("column", "merged_rows"):
         # Для остальных видов группировки поле не имеет смысла: игнорировать
         # безопаснее, чем ронять валидный прогон из-за совещательного шума.
         proposal["grouping"]["column"] = None
@@ -286,16 +319,55 @@ def resolve_layout(proposal: dict, sheets: dict[str, RawSheet], basket_id: str,
         for row1, _c1, row2, _c2 in sheet.merged
     )
     vertical_query_merge = any(
-        row2 > row1 and row2 >= first_data0 and row1 <= last_data0
-        and col1 <= query_index <= col2
+        row2 > row1 and row2 >= first_data0 and row1 <= last_data0 and col1 <= query_index <= col2
         for row1, col1, row2, col2 in sheet.merged
     )
-    if vertical_query_merge or (
-        proposal["grouping"]["kind"] == "none" and vertical_data_merge
-    ):
-        proposal["grouping"] = {"kind": "merged_rows", "column": None}
+    # Для старых планов якорь выводится только из семантической роли,
+    # а не из произвольного merge оценки, категории или оформления.
+    anchor = proposal["grouping"]["column"]
+    session = proposal["roles"]["session_id"]
+
+    def has_merge(address):
+        if address is None:
+            return False
+        column = _column_index(address, sheet.n_cols, "grouping.column")
+        return any(
+            r2 > r1 and r2 >= first_data0 and r1 <= last_data0 and c1 <= column <= c2
+            for r1, c1, r2, c2 in sheet.merged
+        )
+
+    semantic_anchor = (
+        session
+        if has_merge(session)
+        else (get_column_letter(query_index + 1) if vertical_query_merge else None)
+    )
+    if proposal["grouping"]["kind"] == "none" and semantic_anchor:
+        proposal["grouping"] = {"kind": "merged_rows", "column": semantic_anchor}
+    elif proposal["grouping"]["kind"] == "merged_rows":
+        anchor = anchor or semantic_anchor
+        if not has_merge(anchor):
+            raise LayoutError(
+                "grouping=merged_rows требует column с границами диалогов",
+                repair_hint="Задайте колонку сессии/запроса либо grouping=none",
+            )
+        proposal["grouping"]["column"] = anchor
 
     region = build_region(sheet, header_rows, last_data0 + 1)
+    headers = {str(name).strip().casefold() for name in region.columns}
+    reference_pairs = (
+        {"параметр", "значение"},
+        {"поле", "описание"},
+        {"критерий", "описание критерия"},
+        {"column", "description"},
+    )
+    if any(pair <= headers for pair in reference_pairs):
+        query_header = region.columns[query_index].strip().casefold()
+        if any(query_header in pair for pair in reference_pairs):
+            raise LayoutError(
+                "Лист имеет структуру справочника, а не запросов пользователя",
+                sheet=sheet_name,
+                query_column=query_header,
+            )
     roles, grouping, blob, weight = _materialize(proposal, sheet, region)
     _prove_roles(roles, grouping, blob)
     _prove_references(region, roles)
@@ -304,8 +376,14 @@ def resolve_layout(proposal: dict, sheets: dict[str, RawSheet], basket_id: str,
         raise LayoutError("grouping=merged_rows не подтвержден vertical merge")
 
     canonical = {
-        "source_row_id", "query_id", "session_id", "input_query_count",
-        "input_query", "output_answer", "reference_group_id", "turn_index",
+        "source_row_id",
+        "query_id",
+        "session_id",
+        "input_query_count",
+        "input_query",
+        "output_answer",
+        "reference_group_id",
+        "turn_index",
     }
     if roles["scenario"] is not None:
         canonical.add("scenario")
@@ -314,14 +392,12 @@ def resolve_layout(proposal: dict, sheets: dict[str, RawSheet], basket_id: str,
     canonical.update(reference_answer_names(len(roles["reference_answers"])))
     raw_names = raw_column_names(region.columns, canonical)
     column_names = {
-        letter: raw_names[name]
-        for letter, name in zip(region.column_letters, region.columns)
+        letter: raw_names[name] for letter, name in zip(region.column_letters, region.columns)
     }
     formula_rows: dict[str, tuple[int, ...]] = {}
     for column, letter in enumerate(region.column_letters):
         rows = tuple(
-            row + 1 for row in range(first_data0, last_data0 + 1)
-            if (row, column) in sheet.formulas
+            row + 1 for row in range(first_data0, last_data0 + 1) if (row, column) in sheet.formulas
         )
         if rows:
             formula_rows[letter] = rows

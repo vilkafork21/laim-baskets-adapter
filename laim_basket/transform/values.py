@@ -6,9 +6,12 @@ import re
 
 def blank(value: object) -> bool:
     """Пустая ячейка транспорта: None, NaN или строка из пробелов."""
-    return value is None or (
-        isinstance(value, float) and math.isnan(value)
-    ) or str(value).strip() == ""
+    return (
+        value is None
+        or (isinstance(value, float) and math.isnan(value))
+        or str(value).strip() == ""
+    )
+
 
 _SPACES = re.compile(r"[\s  ]+")
 # Любая буква любого алфавита остаётся в имени колонки: заголовок 质量 не

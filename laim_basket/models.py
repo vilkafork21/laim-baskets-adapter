@@ -80,6 +80,7 @@ class MeasurementPlan:
     reported_value: Decimal | None
     reported_raw: str | None
     evidence: dict[str, tuple[str, ...]]
+    missing_values: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def evaluation_unit(self) -> str:
@@ -102,6 +103,9 @@ class MeasurementPlan:
                 "sources": list(self.sources),
                 "missing_policy": self.missing_policy,
                 "majority_denominator": self.majority_denominator,
+                "missing_values": {
+                    key: list(values) for key, values in self.missing_values.items()
+                },
             },
             "reducer": {"method": self.reducer},
             "release": {

@@ -19,7 +19,7 @@ class RawSheet:
     """Лист «как есть»: прямоугольный грид без интерпретации."""
 
     name: str
-    grid: list[list]                 # [row][col], 0-based; кэш значений формул
+    grid: list[list]  # [row][col], 0-based; кэш значений формул
     merged: list[tuple[int, int, int, int]]  # (r1, c1, r2, c2) 0-based включительно
     formulas: dict[tuple[int, int], str] = field(default_factory=dict)
 
@@ -63,31 +63,35 @@ def _sheet_formulas(ws) -> dict[tuple[int, int], str]:
 
 def read_workbook(path) -> dict[str, RawSheet]:
     """Прочитать все листы книги в RawSheet."""
+    wb_values = wb_formulas = None
+    sheets: dict[str, RawSheet] = {}
     try:
         wb_values = openpyxl.load_workbook(path, data_only=True)
         wb_formulas = openpyxl.load_workbook(path, data_only=False)
-    except Exception as exc:  # openpyxl кидает разнотипные ошибки на битых файлах
-        raise ReadError(f"Не удалось открыть xlsx: {path}: {exc}", path=str(path)) from exc
-
-    sheets: dict[str, RawSheet] = {}
-    for ws in wb_values.worksheets:
-        rows = [tuple(row) for row in ws.iter_rows(values_only=True)]
-        merged = [
-            (rng.min_row - 1, rng.min_col - 1, rng.max_row - 1, rng.max_col - 1)
-            for rng in ws.merged_cells.ranges
-        ]
-        formulas = _sheet_formulas(wb_formulas[ws.title])
-        last_row, last_col = _used_bounds(rows, merged, formulas)
-        grid = [
-            [rows[r][c] if c < len(rows[r]) else None for c in range(last_col + 1)]
-            for r in range(last_row + 1)
-        ]
-        sheets[ws.title] = RawSheet(
-            name=ws.title,
-            grid=grid,
-            merged=merged,
-            formulas=formulas,
-        )
+        for ws in wb_values.worksheets:
+            rows = [tuple(row) for row in ws.iter_rows(values_only=True)]
+            merged = [
+                (rng.min_row - 1, rng.min_col - 1, rng.max_row - 1, rng.max_col - 1)
+                for rng in ws.merged_cells.ranges
+            ]
+            formulas = _sheet_formulas(wb_formulas[ws.title])
+            last_row, last_col = _used_bounds(rows, merged, formulas)
+            grid = [
+                [rows[r][c] if c < len(rows[r]) else None for c in range(last_col + 1)]
+                for r in range(last_row + 1)
+            ]
+            sheets[ws.title] = RawSheet(
+                name=ws.title,
+                grid=grid,
+                merged=merged,
+                formulas=formulas,
+            )
+    except Exception as exc:  # openpyxl использует несколько типов ошибок чтения
+        raise ReadError(f"Не удалось прочитать xlsx: {path}: {exc}", path=str(path)) from exc
+    finally:
+        for book in (wb_values, wb_formulas):
+            if book is not None:
+                book.close()
 
     if not sheets:
         raise ReadError(f"В книге нет листов: {path}", path=str(path))

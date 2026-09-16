@@ -43,7 +43,10 @@ def _number_groups(roots: list[int]) -> list[int]:
     return [order[root] for root in roots]
 
 
-def _merged_rows(sheet: RawSheet, region: TableRegion) -> tuple[list[list[object]], list[int], int]:
+def _merged_rows(
+    sheet: RawSheet, region: TableRegion, anchor: str
+) -> tuple[list[list[object]], list[int], int]:
+    anchor_index = region.columns.index(anchor)
     sets = _DisjointSets(len(region.rows))
     rows = [list(row) for row in region.rows]
     filled = 0
@@ -52,8 +55,9 @@ def _merged_rows(sheet: RawSheet, region: TableRegion) -> tuple[list[list[object
         indexes = list(range(max(row1, first) - first, min(row2, last) - first + 1))
         if len(indexes) < 2:
             continue
-        for index in indexes[1:]:
-            sets.union(indexes[0], index)
+        if col1 <= anchor_index <= col2:
+            for index in indexes[1:]:
+                sets.union(indexes[0], index)
         for column in range(col1, min(col2, len(region.columns) - 1) + 1):
             top = rows[indexes[0]][column]
             for index in indexes[1:]:
@@ -120,8 +124,7 @@ def _blob_text(
         separator = re.compile(rf"['\"]\s*,\s*['\"](?={marker.pattern})")
         parts = separator.split(body)
         if any(
-            marker.match(part) is None or re.search(r"['\"]\s*,\s*['\"]", part)
-            for part in parts
+            marker.match(part) is None or re.search(r"['\"]\s*,\s*['\"]", part) for part in parts
         ):
             return raw
         decoded_parts = []
@@ -207,8 +210,17 @@ def _dialogue_literal(value: object) -> list[tuple[str, str, str | None]] | None
 
 # Роли сторон в JSON-экспортах чатов; маркеры из разметки добавляются к ним.
 _QUESTION_ROLES = {"user", "human", "client", "customer", "клиент", "пользователь"}
-_ANSWER_ROLES = {"assistant", "agent", "bot", "ai", "operator",
-                 "агент", "ассистент", "бот", "оператор"}
+_ANSWER_ROLES = {
+    "assistant",
+    "agent",
+    "bot",
+    "ai",
+    "operator",
+    "агент",
+    "ассистент",
+    "бот",
+    "оператор",
+}
 _SERVICE_ROLES = {"system", "tool", "developer"}
 _ROLE_KEYS = ("role", "speaker", "author", "from")
 _TEXT_KEYS = ("content", "text", "message")
@@ -328,7 +340,8 @@ def _unroll_blob(region: TableRegion, blob: dict[str, object]) -> GroupedTable:
             invalid_count=len(invalid),
         )
     accounting: dict[str, object] = {
-        "source_rows": len(region.rows), "unrolled_pairs": len(rows),
+        "source_rows": len(region.rows),
+        "unrolled_pairs": len(rows),
     }
     if invalid:
         # Неразворачиваемое меньшинство — не повод ронять корзину: решение об
@@ -351,15 +364,21 @@ def apply_grouping(sheet: RawSheet, region: TableRegion, config: dict[str, objec
     if kind == "none":
         return GroupedTable(list(region.columns), region.rows, region.source_rows, None)
     if kind == "merged_rows":
-        rows, groups, filled = _merged_rows(sheet, region)
+        rows, groups, filled = _merged_rows(sheet, region, grouping["column"])
         return GroupedTable(
-            list(region.columns), rows, region.source_rows, groups,
+            list(region.columns),
+            rows,
+            region.source_rows,
+            groups,
             accounting={"n_groups": len(set(groups)), "merged_cells_filled": filled},
         )
     if kind == "column":
         groups = _column_groups(region, str(grouping["column"]))
         return GroupedTable(
-            list(region.columns), region.rows, region.source_rows, groups,
+            list(region.columns),
+            region.rows,
+            region.source_rows,
+            groups,
             accounting={"n_groups": len(set(groups))},
         )
     if kind == "blob_row":

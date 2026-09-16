@@ -15,7 +15,7 @@ class IdentityResult:
     accounting: dict
 
 
-_FLOAT_ID_PRECISION_LIMIT = 2 ** 53  # выше — float уже потерял младшие разряды
+_FLOAT_ID_PRECISION_LIMIT = 2**53  # выше — float уже потерял младшие разряды
 
 
 def _render_id_values(values: list) -> tuple[list[str] | None, str | None]:
@@ -25,8 +25,7 @@ def _render_id_values(values: list) -> tuple[list[str] | None, str | None]:
     if any(isinstance(v, float) and abs(v) >= _FLOAT_ID_PRECISION_LIMIT for v in values):
         return None, "float с потерянной точностью (≥2^53) — id повреждён Excel"
     rendered = [
-        str(int(v)) if isinstance(v, float) and v.is_integer() else str(v).strip()
-        for v in values
+        str(int(v)) if isinstance(v, float) and v.is_integer() else str(v).strip() for v in values
     ]
     return rendered, None
 
@@ -66,7 +65,9 @@ def _weight_counts(rows: list[list], columns: list[str], source: str) -> list[in
         raise LayoutError(
             f"Вес {source!r} обязан быть целым числом ≥ 1 в каждой строке "
             f"(ноль/отрицательный вес ломает взвешивание и bootstrap)",
-            column=source, bad_values=bad[:10], bad_count=len(bad),
+            column=source,
+            bad_values=bad[:10],
+            bad_count=len(bad),
         )
     return counts
 
@@ -92,9 +93,7 @@ def build_identity(
     session_id = None
     if isinstance(session_role, dict):
         source = session_role["source"]
-        session_id, reason = _render_id_values(
-            [row[columns.index(source)] for row in rows]
-        )
+        session_id, reason = _render_id_values([row[columns.index(source)] for row in rows])
         if session_id is None:
             # Непригодный источник — деградация, как у query_id: корзина с
             # пропусками в session-колонке не повод ронять ноду.
@@ -111,10 +110,13 @@ def build_identity(
             session_id = list(groups)
         else:
             session_id = list(range(n))
-        accounting.setdefault("session_id", {
-            "strategy": "derive",
-            "rule": "reference_group_index" if groups is not None else "row_index",
-        })
+        accounting.setdefault(
+            "session_id",
+            {
+                "strategy": "derive",
+                "rule": "reference_group_index" if groups is not None else "row_index",
+            },
+        )
     query_scope = session_id if session_role is not None or groups is not None else None
 
     if query_id_override is not None:
@@ -137,7 +139,9 @@ def build_identity(
             query_id, reason = _usable_query_ids(values, query_scope)
             if query_id is None:
                 accounting["query_id"] = {
-                    "strategy": "synthesize", "source_rejected": source, "reason": reason,
+                    "strategy": "synthesize",
+                    "source_rejected": source,
+                    "reason": reason,
                 }
         if query_id is None:
             query_id = [f"row-{i}" for i in range(n)]

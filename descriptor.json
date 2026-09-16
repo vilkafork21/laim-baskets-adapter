@@ -172,7 +172,9 @@
         "laim_basket/transform/region.py",
         "laim_basket/transform/values.py",
         "laim_basket/umr_schema.py",
-        "laim_basket/metric/baseline.py"
+        "laim_basket/metric/baseline.py",
+        "laim_basket/context.py",
+        "laim_basket/contract.py"
       ],
       "functionName": "main",
       "functionParameters": [],

@@ -1,15 +1,18 @@
 """Оркестрация: happy-path разметки, КМ только из отчёта, роли документов."""
-from __future__ import annotations
 
+from __future__ import annotations
 
 from conftest import baseline_answer, layout_answer, metric_answer
 from helpers import FakeClient, make_docx, make_package, make_workbook
+
 from laim_basket.journal import Journal
 from laim_basket.llm import tasks
 from laim_basket.metric.baseline import attach_baseline
 from laim_basket.metric.engine import evaluate
 
 ROWS = [["q", "a", "m", "alt"], ["в1", "о1", 1, 1], ["в2", "о2", 0, 0.8]]
+
+
 def _context(tmp_path):
     package = make_package(tmp_path, {"Лист1": {"rows": ROWS}})
     return tasks.build_run_context(package)
@@ -17,8 +20,7 @@ def _context(tmp_path):
 
 def _layout(tmp_path, journal):
     ctx = _context(tmp_path)
-    outcome = tasks.run_layout(FakeClient([layout_answer()]), ctx, journal, "",
-                               frozenset())
+    outcome = tasks.run_layout(FakeClient([layout_answer()]), ctx, journal, "", frozenset())
     return ctx, outcome
 
 
@@ -31,7 +33,10 @@ def test_context_assigns_document_ports_by_domain_names(tmp_path):
     make_docx(package / "Инструкция по разметке.docx", paragraphs=("Правила",))
     ctx = tasks.build_run_context(package)
     assert [document["port"] for document in ctx.documents] == [
-        "validation_report", "development_report", "assessor_instruction"]
+        "validation_report",
+        "development_report",
+        "assessor_instruction",
+    ]
     assert ctx.basket_id == "CI09000002"
 
 
@@ -61,8 +66,7 @@ def test_metric_not_declared_publishes_no_value(tmp_path):
     ctx, outcome = _layout(tmp_path, journal)
     absent = metric_answer()
 
-    _plan, metric, published = tasks.run_metric(
-        FakeClient([absent]), ctx, outcome, journal)
+    _plan, metric, published = tasks.run_metric(FakeClient([absent]), ctx, outcome, journal)
 
     assert metric["main_metric"]["value"] is None
     assert metric["main_metric"]["recomputed_value"] == 0.5  # информационно
@@ -71,11 +75,11 @@ def test_metric_not_declared_publishes_no_value(tmp_path):
 
 def test_metric_mismatch_is_informational_only(tmp_path):
     journal = Journal()
-    package = make_package(tmp_path, {"Лист1": {"rows": ROWS}},
-                           validation=("Ключевая метрика Accuracy равна 0.9",))
+    package = make_package(
+        tmp_path, {"Лист1": {"rows": ROWS}}, validation=("Ключевая метрика Accuracy равна 0.9",)
+    )
     ctx = tasks.build_run_context(package)
-    outcome = tasks.run_layout(FakeClient([layout_answer()]), ctx, journal, "",
-                               frozenset())
+    outcome = tasks.run_layout(FakeClient([layout_answer()]), ctx, journal, "", frozenset())
     # Заявлено 0.9, пересчёт по C даёт 0.5; второй ответ не должен понадобиться.
     client = FakeClient([metric_answer(), baseline_answer("0.9")])
 
@@ -100,40 +104,60 @@ def test_baseline_uncited_value_is_rejected_without_repairing_score_plan(tmp_pat
     assert result.value == 0.5
     assert len(result.rejected) == 1
 
+
 def test_layout_warns_when_session_source_rejected(tmp_path):
     journal = Journal()
-    rows = [["s", "q", "a", "m"],
-            ["d1", "в1", "о1", 1],
-            [None, "в2", "о2", 0]]
+    rows = [["s", "q", "a", "m"], ["d1", "в1", "о1", 1], [None, "в2", "о2", 0]]
     package = make_package(tmp_path, {"Лист1": {"rows": rows}})
     ctx = tasks.build_run_context(package)
     answer = layout_answer(
-        roles={"query_id": None, "session_id": "A", "input_query": "B",
-               "output_answer": "C", "scenario": None, "assessor_id": None,
-               "reference_answers": []},
-        grouping={"kind": "column", "column": "A"})
+        roles={
+            "query_id": None,
+            "session_id": "A",
+            "input_query": "B",
+            "output_answer": "C",
+            "scenario": None,
+            "assessor_id": None,
+            "reference_answers": [],
+        },
+        grouping={"kind": "column", "column": "A"},
+    )
 
     outcome = tasks.run_layout(FakeClient([answer]), ctx, journal, "", frozenset())
 
     assert outcome.frame["session_id"].tolist() == [0, 0]
     assert any(w["code"] == "session_id_source_rejected" for w in journal.warnings)
 
+
 def _blob_answer():
     return layout_answer(
-        roles={"query_id": None, "session_id": None, "input_query": "A",
-               "output_answer": None, "scenario": None, "assessor_id": None,
-               "reference_answers": []},
+        roles={
+            "query_id": None,
+            "session_id": None,
+            "input_query": "A",
+            "output_answer": None,
+            "scenario": None,
+            "assessor_id": None,
+            "reference_answers": [],
+        },
         grouping={"kind": "blob_row", "column": None},
-        dialogue_blob={"column": "A", "container": "plain_text",
-                       "question_marker": "клиент", "answer_marker": "оператор"})
+        dialogue_blob={
+            "column": "A",
+            "container": "plain_text",
+            "question_marker": "клиент",
+            "answer_marker": "оператор",
+        },
+    )
 
 
 def test_undecodable_blob_rows_dropped_after_repair(tmp_path):
     journal = Journal()
-    rows = [["dialog", "m"],
-            ["клиент: привет оператор: здравствуйте", 1],
-            ["протокол без маркеров", 0],
-            ["клиент: вопрос оператор: ответ", 1]]
+    rows = [
+        ["dialog", "m"],
+        ["клиент: привет оператор: здравствуйте", 1],
+        ["протокол без маркеров", 0],
+        ["клиент: вопрос оператор: ответ", 1],
+    ]
     package = make_package(tmp_path, {"Лист1": {"rows": rows}})
     ctx = tasks.build_run_context(package)
     answer = _blob_answer()
@@ -149,6 +173,7 @@ def test_undecodable_blob_rows_dropped_after_repair(tmp_path):
 def test_blob_without_any_unrollable_row_still_fails(tmp_path):
     # Ни одной развёрнутой строки — это мусор или неверная разметка: падение.
     from laim_basket.errors import SpecError
+
     journal = Journal()
     rows = [["dialog", "m"], ["мусор", 1], ["ещё мусор", 0]]
     package = make_package(tmp_path, {"Лист1": {"rows": rows}})
@@ -156,24 +181,28 @@ def test_blob_without_any_unrollable_row_still_fails(tmp_path):
     answer = _blob_answer()
 
     import pytest
+
     with pytest.raises(SpecError):
-        tasks.run_layout(FakeClient([answer, answer, answer]), ctx, journal,
-                         "", frozenset())
+        tasks.run_layout(FakeClient([answer, answer, answer]), ctx, journal, "", frozenset())
+
 
 def test_grouped_blank_input_query_rows_dropped_after_repair(tmp_path):
     journal = Journal()
-    rows = [["s", "q", "a", "m"],
-            [1, "в1", "о1", 1],
-            [None, None, "о2", None],
-            [2, "в3", "о3", 0]]
-    package = make_package(
-        tmp_path, {"Лист1": {"rows": rows, "merges": ["A2:A3", "D2:D3"]}})
+    rows = [["s", "q", "a", "m"], [1, "в1", "о1", 1], [None, None, "о2", None], [2, "в3", "о3", 0]]
+    package = make_package(tmp_path, {"Лист1": {"rows": rows, "merges": ["A2:A3", "D2:D3"]}})
     ctx = tasks.build_run_context(package)
     answer = layout_answer(
-        roles={"query_id": None, "session_id": "A", "input_query": "B",
-               "output_answer": "C", "scenario": None, "assessor_id": None,
-               "reference_answers": []},
-        grouping={"kind": "merged_rows", "column": None})
+        roles={
+            "query_id": None,
+            "session_id": "A",
+            "input_query": "B",
+            "output_answer": "C",
+            "scenario": None,
+            "assessor_id": None,
+            "reference_answers": [],
+        },
+        grouping={"kind": "merged_rows", "column": None},
+    )
     client = FakeClient([answer, answer, answer])
 
     outcome = tasks.run_layout(client, ctx, journal, "", frozenset())
@@ -204,17 +233,26 @@ def test_later_bad_repair_does_not_discard_recoverable_layout(tmp_path):
 
 def test_blank_group_rows_dropped_after_repair(tmp_path):
     journal = Journal()
-    rows = [["s", "q", "a", "m"],
-            [None, "в0", "о0", 1],
-            ["d1", "в1", "о1", 1],
-            ["d1", "в2", "о2", 0]]
+    rows = [
+        ["s", "q", "a", "m"],
+        [None, "в0", "о0", 1],
+        ["d1", "в1", "о1", 1],
+        ["d1", "в2", "о2", 0],
+    ]
     package = make_package(tmp_path, {"Лист1": {"rows": rows}})
     ctx = tasks.build_run_context(package)
     answer = layout_answer(
-        roles={"query_id": None, "session_id": None, "input_query": "B",
-               "output_answer": "C", "scenario": None, "assessor_id": None,
-               "reference_answers": []},
-        grouping={"kind": "column", "column": "A"})
+        roles={
+            "query_id": None,
+            "session_id": None,
+            "input_query": "B",
+            "output_answer": "C",
+            "scenario": None,
+            "assessor_id": None,
+            "reference_answers": [],
+        },
+        grouping={"kind": "column", "column": "A"},
+    )
     client = FakeClient([answer, answer, answer])
 
     outcome = tasks.run_layout(client, ctx, journal, "", frozenset())
@@ -223,16 +261,22 @@ def test_blank_group_rows_dropped_after_repair(tmp_path):
     assert journal.dropped_rows["blank_group"] == [2]
 
 
-
 def test_dropping_most_rows_is_not_a_degradation(tmp_path):
     # Отброс большинства строк после repair — не «деградация с учётом», а
     # несобранная разметка: корзина из одной строки не должна уйти как computed.
     import pytest
 
     from laim_basket.errors import SpecError
+
     journal = Journal()
-    rows = [["q", "a", "m"], ["в1", "о1", 1], [None, "о2", 0], [None, "о3", 1],
-            [None, "о4", 0], ["в5", "о5", 1]]
+    rows = [
+        ["q", "a", "m"],
+        ["в1", "о1", 1],
+        [None, "о2", 0],
+        [None, "о3", 1],
+        [None, "о4", 0],
+        ["в5", "о5", 1],
+    ]
     package = make_package(tmp_path, {"Лист1": {"rows": rows}})
     ctx = tasks.build_run_context(package)
     answer = layout_answer()

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from ..errors import PackageError
 
-
 logger = logging.getLogger(__name__)
 
 _TXT_INSTRUCTION_NAME = "assessor_instruction.txt"
@@ -47,21 +46,30 @@ def scan_package(input_path: str | Path) -> dict[str, object]:
     root = Path(input_path)
     if not root.exists():
         raise PackageError(f"Путь не существует: {root}", path=str(root))
-    paths = [root] if root.is_file() else sorted(
-        path for path in root.iterdir()
-        if path.is_file() and not path.name.startswith((".", "~$"))
+    paths = (
+        [root]
+        if root.is_file()
+        else sorted(
+            path
+            for path in root.iterdir()
+            if path.is_file() and not path.name.startswith((".", "~$"))
+        )
     )
     files = []
     baskets: list[str] = []
     documents: list[str] = []
     for path in paths:
         kind = classify_file(path)
-        logger.debug("Файл %s классифицирован как %s (%d байт)", path.name, kind, path.stat().st_size)
-        files.append({
-            "name": path.name,
-            "kind": kind,
-            "sha256": _sha256(path),
-        })
+        logger.debug(
+            "Файл %s классифицирован как %s (%d байт)", path.name, kind, path.stat().st_size
+        )
+        files.append(
+            {
+                "name": path.name,
+                "kind": kind,
+                "sha256": _sha256(path),
+            }
+        )
         if kind == "basket_xlsx":
             baskets.append(path.name)
         elif kind == "document_docx":

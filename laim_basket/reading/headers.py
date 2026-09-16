@@ -15,7 +15,9 @@ from .xlsx_reader import RawSheet
 _SPACES = re.compile(r"\s+")
 
 
-def header_merge_map(sheet: RawSheet, header_rows0: list[int]) -> dict[tuple[int, int], tuple[int, int]]:
+def header_merge_map(
+    sheet: RawSheet, header_rows0: list[int]
+) -> dict[tuple[int, int], tuple[int, int]]:
     """(r, c) шапки внутри merged-диапазона → его левая верхняя ячейка.
 
     Берётся любой merge, ПЕРЕСЕКАЮЩИЙ строки шапки (в т.ч. начавшийся выше —
@@ -30,8 +32,12 @@ def header_merge_map(sheet: RawSheet, header_rows0: list[int]) -> dict[tuple[int
     return lookup
 
 
-def merge_header(sheet: RawSheet, header_rows0: list[int], c: int,
-                 merge_map: dict[tuple[int, int], tuple[int, int]]) -> str:
+def merge_header(
+    sheet: RawSheet,
+    header_rows0: list[int],
+    c: int,
+    merge_map: dict[tuple[int, int], tuple[int, int]],
+) -> str:
     """Имя колонки: непустые части строк шапки сверху вниз через пробел.
 
     Одна merged-ячейка, пересекающая обе строки шапки, даёт свою часть один

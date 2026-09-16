@@ -1,4 +1,5 @@
 """Журнал прогона: каждое событие немедленно в logging и в буфер для km_result."""
+
 from __future__ import annotations
 
 import logging
@@ -23,8 +24,7 @@ class Journal:
 
     def decision(self, **fields) -> None:
         self.decisions.update(fields)
-        logger.info("Решение: %s",
-                    ", ".join(f"{key}={value!r}" for key, value in fields.items()))
+        logger.info("Решение: %s", ", ".join(f"{key}={value!r}" for key, value in fields.items()))
 
     def warning(self, code: str, message: str) -> None:
         self.warnings.append({"code": code, "message": message})
@@ -38,11 +38,22 @@ class Journal:
         """Хэши входов уже посчитаны при скане пакета — не читать файлы повторно."""
         self.input_sha256 = dict(hashes)
 
-    def set_llm(self, *, model: str, structured_output: bool | None,
-                calls: int, repair_turns: int, transport_retries: int) -> None:
-        self.llm = {"model": model, "structured_output": structured_output,
-                    "calls": calls, "repair_turns": repair_turns,
-                    "transport_retries": transport_retries}
+    def set_llm(
+        self,
+        *,
+        model: str,
+        structured_output: bool | None,
+        calls: int,
+        repair_turns: int,
+        transport_retries: int,
+    ) -> None:
+        self.llm = {
+            "model": model,
+            "structured_output": structured_output,
+            "calls": calls,
+            "repair_turns": repair_turns,
+            "transport_retries": transport_retries,
+        }
 
     def report(self, *, basket_id: str, status: str, km: dict | None) -> dict:
         return {
