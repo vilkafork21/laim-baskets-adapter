@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from html import escape
 import zipfile
 from pathlib import Path
 
@@ -32,14 +33,14 @@ def make_docx(path: Path, paragraphs=(), heading: str | None = None, table=None)
     if heading:
         parts.append(
             '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
-            f"<w:r><w:t>{heading}</w:t></w:r></w:p>"
+            f"<w:r><w:t>{escape(str(heading))}</w:t></w:r></w:p>"
         )
     for text in paragraphs:
-        parts.append(f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>")
+        parts.append(f"<w:p><w:r><w:t>{escape(str(text))}</w:t></w:r></w:p>")
     if table:
         rows = "".join(
             "<w:tr>"
-            + "".join(f"<w:tc><w:p><w:r><w:t>{cell}</w:t></w:r></w:p></w:tc>" for cell in row)
+            + "".join(f"<w:tc><w:p><w:r><w:t>{escape(str(cell))}</w:t></w:r></w:p></w:tc>" for cell in row)
             + "</w:tr>"
             for row in table
         )
@@ -67,8 +68,8 @@ def make_package(tmp_path: Path, sheets: dict, validation=(), development=(),
 class FakeClient:
     """Duck-type LlmClient: отдаёт заготовленные ответы по очереди, пишет вызовы."""
 
-    def __init__(self, responses):
-        self.responses = list(responses)
+    def __init__(self, responses, *, baseline=None):
+        self.responses = list(responses) + ([] if baseline is None else [baseline])
         self.labels: list[str] = []
         self.histories: list[list[dict]] = []
         self.structured_output = None

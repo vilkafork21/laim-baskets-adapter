@@ -1,4 +1,4 @@
-"""Оркестрация двух LLM-задач: разметка книги и план метрики.
+"""Оркестрация независимых задач L (структура), S (оценки) и K (baseline).
 
 Разметка обязана собрать обязательные поля спеки (иначе SpecError — нода
 падает); план метрики деградирует: его провал оставляет корзину публикуемой.
@@ -18,6 +18,7 @@ import pandas as pd
 from .. import defaults
 from ..errors import (
     LayoutError,
+    LlmError,
     PackageError,
     SpecError,
     StructuredOutputError,
@@ -27,10 +28,10 @@ from ..journal import Journal
 from ..metric.engine import evaluate
 from ..metric.resolve import (
     resolve_measurement_plan,
-    verify_reported_citation,
     vertically_merged_source,
 )
 from ..models import MeasurementPlan, ResolvedLayout, RunContext
+from ..metric.baseline import select_baseline, BaselineResult
 from ..publish import PublishedUmr, publish_umr
 from ..reading.docx_reader import read_document_paragraphs
 from ..reading.package_scan import scan_package
@@ -40,8 +41,8 @@ from ..transform.canon import build_canon
 from ..transform.grouping import apply_grouping
 from ..transform.values import blank
 from .client import request_structured
-from .prompts import layout_messages, metric_messages
-from .schemas import LAYOUT_SCHEMA, METRIC_SCHEMA
+from .prompts import baseline_messages, layout_messages, metric_messages
+from .schemas import BASELINE_SCHEMA, LAYOUT_SCHEMA, METRIC_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,12 @@ def _basket_id(package_name: str) -> str:
     return match.group(0).upper()
 
 
-def build_run_context(package: str | Path) -> RunContext:
+def build_run_context(package: str | Path, agent_ci: str = "") -> RunContext:
+    identity = (agent_ci or "").strip()
+    if identity and not re.fullmatch(r"CI[0-9]+", identity, re.IGNORECASE):
+        raise PackageError(
+            "Этап L. Ожидалось: agent_ci вида CI и цифры либо пустая строка. "
+            f"Получено: {identity!r}. Действие: исправьте настройку agent_ci.")
     manifest = scan_package(package)
     baskets = manifest["baskets"]
     documents = manifest["documents"]
@@ -153,7 +159,7 @@ def build_run_context(package: str | Path) -> RunContext:
     sheets = read_workbook(basket_path)
     logger.info("Книга %s: листы %s", basket_path.name, list(sheets))
     return RunContext(
-        basket_id=_basket_id(manifest["package_name"]),
+        basket_id=identity.upper() if identity else _basket_id(manifest["package_name"]),
         file_hashes={item["name"]: item["sha256"] for item in manifest["files"]},
         sheets=sheets,
         documents=loaded_documents,
@@ -270,14 +276,16 @@ def run_layout(client, ctx: RunContext, journal: Journal, pinned_sheet: str,
             layout_messages(evidence, ctx.documents, pinned_sheet, rejected_sheets),
             LAYOUT_SCHEMA, "layout", validate_extra=validate,
         )
-    except (LayoutError, StructuredOutputError) as exc:
+    except (LayoutError, StructuredOutputError, LlmError) as exc:
         if not recoverable:
             details = dict(exc.details)
             if attempted.get("sheet"):
                 # Лист последней попытки нужен pipeline для запасного листа.
                 details["sheet"] = attempted["sheet"]
             raise SpecError(
-                f"Обязательные поля спеки не собраны после repair: {exc}",
+                "Этап L. Ожидалось: канон с непустым input_query. "
+                f"Получено: обязательные поля спеки не собраны после repair: {exc}. "
+                "Действие: проверьте колонку запроса, границы данных и sheet_name.",
                 **details,
             ) from exc
         # Repair не помог, но кандидат публикуем: отброс меньшинства строк —
@@ -330,16 +338,9 @@ def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
     layout, frame = outcome.layout, outcome.frame
     sheet = ctx.sheets[layout.sheet_name]
     resolved: dict = {}
-    validation_report_text = "\n".join(
-        paragraph
-        for document in ctx.documents if document["port"] == "validation_report"
-        for paragraph in document["paragraphs"]
-    )
 
     def validate(proposal: dict) -> None:
         plan = resolve_measurement_plan(proposal, layout, frame, sheet)
-        if plan.reported_raw is not None:
-            verify_reported_citation(plan.reported_raw, validation_report_text)
         scored, km = evaluate(frame, layout, plan)
         # Проекция — часть валидации: конфликт имён колонок возвращается
         # модели как repair, а не роняет прогон.
@@ -361,4 +362,26 @@ def run_metric(client, ctx: RunContext, outcome: LayoutOutcome,
             f"{resolved['km']['percent_domain_columns']} заданы в процентных "
             f"пунктах при шкале {resolved['plan'].scale} — приведены к долям",
         )
+    formula_sources = {source["column_id"]: list(layout.formula_rows[source["column_id"]])
+                       for source in resolved["plan"].sources
+                       if source["column_id"] in layout.formula_rows}
+    if formula_sources:
+        journal.warning(
+            "formula_score_cached",
+            f"Этап S: использован кеш построчных формул {formula_sources}; "
+            "формулы не пересчитывались. Перед загрузкой пересчитайте и сохраните Excel.",
+        )
     return resolved["plan"], resolved["km"], resolved["published"]
+
+
+def run_baseline(client, ctx: RunContext, selected_sheet: str,
+                 plan: MeasurementPlan | None = None) -> BaselineResult:
+    report = next(document for document in ctx.documents if document["port"] == "validation_report")
+    candidates = request_structured(
+        client, baseline_messages(report, list(ctx.sheets), plan.metric_name if plan else ""),
+        BASELINE_SCHEMA, "baseline",
+    )
+    return select_baseline(
+        candidates, report["paragraphs"], selected_sheet=selected_sheet,
+        metric_name=plan.metric_name if plan else "", scale=plan.scale if plan else None,
+    )

@@ -43,9 +43,6 @@ def metric_answer(**overrides) -> dict:
         "missing_policy": "exclude_unit",
         "majority_denominator": None,
         "scale": "ratio",
-        "reported_value": {"state": "declared", "value": 0.5, "raw": "0.5"},
-        "threshold": None,
-        "comparator": None,
     }
     answer.update(overrides)
     return answer
@@ -68,3 +65,11 @@ def layout_proposal(roles: dict, grouping=None, dialogue_blob=None, weight=None,
         "dialogue_blob": dialogue_blob,
         "weight_column": weight,
     }
+
+
+def baseline_answer(raw="0.5", paragraph="p002", **overrides):
+    """Ответ K: номер строки соответствует make_package с заголовком."""
+    candidate = dict(metric_name="Accuracy", raw=raw, paragraph=paragraph,
+                     kind="value", slice_label=None, is_key_metric=True)
+    candidate.update(overrides)
+    return [candidate]

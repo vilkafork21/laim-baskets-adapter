@@ -1,4 +1,4 @@
-"""JSON-схемы двух LLM-задач.
+"""JSON-схемы трёх независимых LLM-задач.
 
 Поле quotes стоит в properties первым: при последовательной генерации модель
 сперва выписывает основание из документов, затем решает. Физические границы
@@ -115,8 +115,7 @@ METRIC_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": ["quotes", "metric_name", "method", "sources", "reducer",
-                 "missing_policy", "majority_denominator", "scale",
-                 "reported_value", "threshold", "comparator"],
+                 "missing_policy", "majority_denominator", "scale"],
     "properties": {
         "quotes": _QUOTES,
         "metric_name": {"type": "string", "minLength": 1},
@@ -127,18 +126,24 @@ METRIC_SCHEMA = {
         "missing_policy": {"enum": ["fail", "exclude_unit", "exclude_value", "zero"]},
         "majority_denominator": {"enum": ["declared", "present", None]},
         "scale": {"enum": ["ratio", "percent", "raw"]},
-        "reported_value": {
-            "type": "object", "additionalProperties": False,
-            "required": ["state", "value", "raw"],
-            "properties": {
-                "state": {"enum": ["declared", "not_declared", "ambiguous"]},
-                "value": {"type": ["number", "null"]},
-                # Точный текст числа из отчёта: от него считаются precision
-                # и допуск сверки (последний опубликованный разряд).
-                "raw": {"type": ["string", "null"]},
-            },
-        },
-        "threshold": {"type": ["number", "null"]},
+    },
+}
+
+BASELINE_CANDIDATE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["metric_name", "raw", "paragraph", "kind", "slice_label", "is_key_metric"],
+    "properties": {
+        "metric_name": {"type": "string", "minLength": 1},
+        "raw": {"type": "string", "minLength": 1},
+        "paragraph": {"type": "string", "pattern": "^p[0-9]{3,}$"},
+        "kind": {"enum": ["value", "slice_value", "threshold", "ci_bound", "other"]},
+        "slice_label": {"type": ["string", "null"]},
+        "is_key_metric": {"type": "boolean"},
         "comparator": {"enum": [">=", "<=", None]},
     },
+}
+
+BASELINE_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "array", "items": BASELINE_CANDIDATE_SCHEMA,
 }

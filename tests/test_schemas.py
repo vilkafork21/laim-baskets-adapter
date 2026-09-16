@@ -33,9 +33,6 @@ METRIC_EXAMPLE = {
     "missing_policy": "exclude_unit",
     "majority_denominator": None,
     "scale": "ratio",
-    "reported_value": {"state": "declared", "value": 0.93, "raw": "0.93"},
-    "threshold": 0.9,
-    "comparator": ">=",
 }
 
 

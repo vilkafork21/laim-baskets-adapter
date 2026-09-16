@@ -50,3 +50,7 @@ class AmbiguousBaselineError(NotEvaluableError):
 
 class SpecError(BasketError):
     reason_code = "spec_error"
+
+
+class ScorePlanError(BasketError):
+    reason_code = "score_plan_failed"

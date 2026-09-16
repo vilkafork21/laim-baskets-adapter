@@ -13,10 +13,11 @@ from decimal import Decimal, InvalidOperation
 import jsonschema
 from openpyxl.utils import column_index_from_string
 
-from ..errors import AmbiguousBaselineError, MeasurementPlanError, NotEvaluableError
+from ..errors import MeasurementPlanError, NotEvaluableError
 from ..llm.schemas import METRIC_SCHEMA
 from ..models import MeasurementPlan, ResolvedLayout
 from ..reading.xlsx_reader import RawSheet
+from ..reading.formulas import is_row_local_formula
 from ..transform.values import blank as _blank, normalize_key
 
 logger = logging.getLogger(__name__)
@@ -37,20 +38,9 @@ def decimal_value(value: object) -> Decimal:
 
 def reported_quantum(plan: MeasurementPlan) -> Decimal:
     """Один последний опубликованный разряд в канонической шкале плана."""
-    raw = str(plan.reported_raw or plan.reported_value).strip()
-    percent = raw.endswith("%")
-    token = raw.rstrip("%").strip()
-    try:
-        value = decimal_value(token)
-    except MeasurementPlanError:
-        value = plan.reported_value
-    quantum = Decimal(1).scaleb(value.as_tuple().exponent)
-    if plan.scale == "percent" and not percent and abs(value) <= 1:
-        return quantum * 100
-    # Зеркало _parse_reported: доля с «%» (abs <= 1) остаётся в своём домене.
-    if plan.scale == "ratio" and percent and abs(value) > 1:
-        return quantum / 100
-    return quantum
+    if plan.reported_value is None:
+        return Decimal(1)
+    return Decimal(1).scaleb(plan.reported_value.as_tuple().exponent)
 
 
 def _validate_source_contract(method: str, sources: list[dict[str, object]]) -> None:
@@ -180,52 +170,6 @@ def _assessment_mode(sheet: RawSheet, layout: ResolvedLayout, frame,
     return "turn_with_history"
 
 
-def _parse_reported(reported: dict, scale: str) -> tuple[Decimal | None, str | None, int]:
-    state = reported["state"]
-    if state == "ambiguous":
-        raise AmbiguousBaselineError(
-            "Отчёт о валидации объявляет итоговую КМ неоднозначно",
-        )
-    if state == "not_declared":
-        return None, None, 0
-    # Только raw: без дословной цитаты нет declared-значения (иначе цитатный
-    # гейт обходится значением без цитаты).
-    token = "" if reported["raw"] is None else str(reported["raw"]).strip()
-    if not token:
-        raise MeasurementPlanError(
-            "state=declared требует raw — дословную цитату значения из отчёта о валидации")
-    percent_token = token.endswith("%")
-    value = decimal_value(token.rstrip("%").strip())
-    precision = max(0, -value.as_tuple().exponent)
-    if scale == "percent" and not percent_token and abs(value) <= 1:
-        value *= 100
-    elif scale == "ratio" and percent_token and abs(value) > 1:
-        value /= 100
-    return value, token, precision
-
-
-_WHITESPACE_RUN = re.compile(r"\s+")
-
-
-def verify_reported_citation(raw: str, report_text: str) -> None:
-    """КМ публикуется только заявленной в отчёте о валидации, поэтому raw
-    обязан быть дословной цитатой отчёта (пробельные последовательности
-    приравниваются — DOCX перемежает пробелы с NBSP). Границы по цифрам:
-    «0.9» не совпадает внутри «0.93»."""
-    needle = _WHITESPACE_RUN.sub(" ", raw).strip()
-    haystack = _WHITESPACE_RUN.sub(" ", report_text)
-    if needle and re.search(rf"(?<![0-9]){re.escape(needle)}(?![0-9])", haystack):
-        return
-    raise MeasurementPlanError(
-        "Заявленное значение КМ не найдено дословно в отчёте о валидации",
-        reported_raw=raw,
-        repair_hint=(
-            "raw обязан быть точной цитатой значения из отчёта о валидации; "
-            "если отчёт не объявляет КМ — верни state=not_declared"
-        ),
-    )
-
-
 def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
                              frame, sheet: RawSheet) -> MeasurementPlan:
     try:
@@ -251,15 +195,20 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
         column: layout.formula_rows[column]
         for column in column_ids if column in layout.formula_rows
     }
-    if formula_sources:
+    unsafe_formulas = {
+        column: tuple(row for row in rows
+                      if not is_row_local_formula(sheet.formulas.get(
+                          (row - 1, column_index_from_string(column) - 1), ''), row))
+        for column, rows in formula_sources.items()
+    }
+    unsafe_formulas = {column: rows for column, rows in unsafe_formulas.items() if rows}
+    if unsafe_formulas:
         raise NotEvaluableError(
-            "Кешированные результаты Excel-формул нельзя использовать как score",
-            formula_sources=formula_sources,
-            formula_components=_formula_components(sheet, layout, formula_sources),
-            repair_hint=(
-                "Формульная колонка — производная от сырых оценок. Построй план "
-                "по колонкам-компонентам formula_components, а не по кешу формулы."
-            ),
+            "Этап S. Ожидалось: score с формулой только своей строки. "
+            "Получено: межстрочные, внешние или недоказуемые ссылки. "
+            "Действие: выберите исходные оценки либо сохраните статические значения.",
+            formula_sources=unsafe_formulas,
+            formula_components=_formula_components(sheet, layout, unsafe_formulas),
         )
 
     assessment_mode = _assessment_mode(sheet, layout, frame, column_ids)
@@ -331,27 +280,11 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
             raise NotEvaluableError("Кеш Excel-формулы нельзя использовать как frequency weight",
                                     rows=layout.formula_rows[weight_id])
 
-    threshold_raw = proposal["threshold"]
-    comparator = proposal["comparator"]
-    if (threshold_raw is None) != (comparator is None):
-        raise MeasurementPlanError("threshold и comparator должны быть заданы вместе или оба быть null")
-    threshold = decimal_value(threshold_raw) if threshold_raw is not None else None
-
-    reported_value, reported_raw, precision = _parse_reported(
-        proposal["reported_value"], proposal["scale"])
-    if reported_value is None:
-        logger.warning(
-            "КМ в отчёте о валидации НЕ объявлена: baseline брать неоткуда, "
-            "контракт уйдёт как not_computable")
-    else:
-        logger.info("КМ в отчёте о валидации объявлена: %s (raw %r, шкала %s)",
-                    reported_value, reported_raw, proposal["scale"])
-
     logger.info(
         "MeasurementPlan: метрика %r, метод %s, reducer %s, источников %d, "
         "missing_policy %s, режим %s, шкала %s, порог %s",
         proposal["metric_name"], method, reducer, len(sources),
-        missing_policy, assessment_mode, proposal["scale"], threshold,
+        missing_policy, assessment_mode, proposal["scale"], None,
     )
     return MeasurementPlan(
         basket_id=layout.basket_id,
@@ -362,11 +295,11 @@ def resolve_measurement_plan(proposal: dict, layout: ResolvedLayout,
         missing_policy=missing_policy,
         majority_denominator=denominator,
         reducer=reducer,
-        threshold=threshold,
-        comparator=comparator,
+        threshold=None,
+        comparator=None,
         scale=proposal["scale"],
-        precision=precision,
-        reported_value=reported_value,
-        reported_raw=reported_raw,
+        precision=0,
+        reported_value=None,
+        reported_raw=None,
         evidence={key: tuple(values) for key, values in proposal["quotes"].items()},
     )

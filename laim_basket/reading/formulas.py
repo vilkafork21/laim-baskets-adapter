@@ -32,3 +32,34 @@ def is_vertical_aggregate(formula: str) -> bool:
 def vertical_aggregate_cells(formulas: dict[tuple[int, int], str]) -> set[tuple[int, int]]:
     """Ячейки с вертикальными агрегатами — один O(F)-проход, дальше lookup."""
     return {cell for cell, formula in formulas.items() if is_vertical_aggregate(formula)}
+
+
+# Разрешаем только статические A1-ссылки текущей строки. Текстовые литералы
+# не являются ссылками; INDIRECT/OFFSET и внешние источники доказать нельзя.
+_LOCAL_RANGE = re.compile(r'\$?[A-Z]{1,3}\$?([1-9][0-9]*)(?::\$?[A-Z]{1,3}\$?([1-9][0-9]*))?', re.I)
+_DYNAMIC_FUNCTIONS = {'INDIRECT', 'OFFSET', 'RAND', 'RANDBETWEEN', 'RANDARRAY',
+                      'NOW', 'TODAY', 'WEBSERVICE', 'RTD', 'ДВССЫЛ', 'СМЕЩ',
+                      'СЛЧИС', 'СЛУЧМЕЖДУ', 'ТДАТА', 'СЕГОДНЯ'}
+
+
+def is_row_local_formula(formula: str, row: int) -> bool:
+    """row — физический номер строки Excel (1-based); формулы не исполняются."""
+    from openpyxl.formula.tokenizer import Tokenizer, TokenizerError
+
+    if not isinstance(formula, str) or not formula.startswith('='):
+        return False
+    try:
+        tokens = Tokenizer(formula).items
+    except (TokenizerError, IndexError, ValueError):
+        return False
+    if not tokens:
+        return False
+    for token in tokens:
+        if token.type == 'FUNC' and token.subtype == 'OPEN':
+            if token.value[:-1].upper().split('.')[-1] in _DYNAMIC_FUNCTIONS:
+                return False
+        if token.type == 'OPERAND' and token.subtype == 'RANGE':
+            ref = _LOCAL_RANGE.fullmatch(token.value)
+            if ref is None or any(int(value) != row for value in ref.groups() if value is not None):
+                return False
+    return True

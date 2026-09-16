@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import layout_answer, metric_answer
+from conftest import baseline_answer, layout_answer, metric_answer
 from helpers import FakeClient, make_package
 from laim_basket.errors import LayoutError
 
@@ -24,10 +24,10 @@ def _load_main():
     return module
 
 
-def _run_main(tmp_path, monkeypatch, responses, rows=None):
+def _run_main(tmp_path, monkeypatch, responses, rows=None, baseline=None):
     package = make_package(tmp_path, {"Лист1": {"rows": rows or ROWS}})
     main = _load_main()
-    client = FakeClient(responses)
+    client = FakeClient(responses, baseline=baseline_answer() if baseline is None else baseline)
     monkeypatch.setattr(main, "LlmClient", lambda config, out_dir: client)
     return main.main(
         validation_report=package / "validation_report.docx",
@@ -80,8 +80,7 @@ def test_not_computable_still_publishes_umr(tmp_path, monkeypatch):
 def test_official_baseline_missing_reason_code(tmp_path, monkeypatch):
     ports = _run_main(tmp_path, monkeypatch, [
         layout_answer(),
-        metric_answer(reported_value={"state": "not_declared", "value": None,
-                                       "raw": None})])
+        metric_answer()], baseline=[])
     metric = ports["monitoring_metric"]
     assert metric["status"] == "not_computable"
     assert metric["reason_code"] == "official_baseline_missing"
@@ -112,7 +111,7 @@ def test_main_logs_basket_error_details_before_raising(tmp_path, monkeypatch, ca
     main = _load_main()
     monkeypatch.setattr(main, "LlmClient", lambda config, out_dir: object())
 
-    def failing_run_package(path, out_dir, client, sheet_name):
+    def failing_run_package(path, out_dir, client, sheet_name, agent_ci):
         raise LayoutError(
             "Канонический UMR не прошёл валидацию",
             missing_required_values={"input_query": {"count": 2,

@@ -1,9 +1,4 @@
-"""Единственный продовый путь: пакет -> разметка -> канон -> КМ -> публикация.
-
-Этапы пишутся в журнал (logging + порт km_result). Провал плана метрики —
-деградация not_computable с публикацией корзины; падение ноды оставлено
-битому пакету, недоступной LLM и несобранным обязательным полям спеки.
-"""
+"""Независимые этапы L -> S и K; провалы S/K не меняют собранную корзину."""
 from __future__ import annotations
 
 import json
@@ -15,14 +10,9 @@ import uuid
 from pathlib import Path
 
 from .config import llm_config
-from .errors import (
-    AmbiguousBaselineError,
-    BasketError,
-    MeasurementPlanError,
-    NotEvaluableError,
-    SpecError,
-    StructuredOutputError,
-)
+from .errors import BasketError, ScorePlanError, SpecError
+from .metric.baseline import attach_baseline, failed_baseline
+from .metric.engine import evaluate
 from .export.umr import export_umr_workbook
 from .journal import Journal
 from .llm import tasks
@@ -91,6 +81,7 @@ def run_package(
     out_dir: str | Path,
     client=None,
     sheet_name: str = "",
+    agent_ci: str = "",
 ) -> RunResult:
     """sheet_name задаёт обязательный лист корзины (книги с листами нескольких
     агентов различимы только оператором); пустое значение — автоопределение."""
@@ -100,97 +91,83 @@ def run_package(
     debug.mkdir(parents=True, exist_ok=True)
     journal = Journal()
     started = time.monotonic()
-    context = tasks.build_run_context(input_path)
+    context = tasks.build_run_context(input_path, agent_ci=agent_ci)
     journal.set_inputs(context.file_hashes)
     tasks.check_report_identity(context, journal)
     journal.stage("read", "ok", _ms(started))
     llm = client or LlmClient(llm_config(), debug)
 
-    plan, km, published = None, None, None
-    status = "computed"
+    # L: запасной лист допустим только до получения канона.
     rejected: frozenset[str] = frozenset()
-    # Канон первого листа, на котором не собрался план: если запасной лист
-    # не размечается вовсе, корзина публикуется с него как not_computable.
-    fallback: tuple[tasks.LayoutOutcome, BasketError] | None = None
     for attempt in (1, 2):
         stage_started = time.monotonic()
         try:
             outcome = tasks.run_layout(llm, context, journal, sheet_name, rejected)
         except SpecError as exc:
+            journal.stage("layout", "degraded", _ms(stage_started))
             failed_sheet = exc.details.get("sheet")
-            if fallback is not None:
-                journal.stage("layout", "degraded", _ms(stage_started))
-                journal.warning(exc.reason_code,
-                                f"запасной лист не размечен: {exc}")
-                outcome, cause = fallback
-                journal.decision(sheet=outcome.layout.sheet_name,
-                                 grouping=outcome.layout.grouping["kind"])
-                plan, km = None, _not_computable(context.basket_id, cause)
-                published = publish_umr(outcome.frame, outcome.layout, None)
-                status = "not_computable"
-                break
             if sheet_name or attempt == 2 or len(context.sheets) < 2 or not failed_sheet:
                 raise
-            # Симметрия с этапом метрики: несобираемый лист отвергается,
-            # разметка пробуется на запасном.
-            journal.stage("layout", "degraded", _ms(stage_started))
-            journal.warning(
-                exc.reason_code,
-                f"разметка не собрана на листе {failed_sheet!r}: {exc}",
-            )
+            journal.warning(exc.reason_code, str(exc))
             rejected = frozenset({failed_sheet})
             continue
         journal.stage("layout", "ok", _ms(stage_started))
-        journal.decision(sheet=outcome.layout.sheet_name,
-                         grouping=outcome.layout.grouping["kind"])
-        logger.info(
-            "Лист %r: шапка %s, данные строки %d-%d, роли %s",
-            outcome.layout.sheet_name, list(outcome.layout.header_rows),
-            outcome.layout.first_data_row, outcome.layout.last_data_row,
-            {role: value["source"] for role, value in outcome.layout.roles.items()
-             if isinstance(value, dict) and "source" in value},
-        )
-        _json(debug / "layout_proposal.json", outcome.proposal)
-        _json(debug / "resolved_layout.json", outcome.layout.to_dict())
-        _json(debug / "conversion.json", outcome.conversion)
+        break
+    journal.decision(sheet=outcome.layout.sheet_name,
+                     grouping=outcome.layout.grouping["kind"],
+                     basket_id_source="agent_ci" if (agent_ci or "").strip() else "package_name")
+    _json(debug / "layout_proposal.json", outcome.proposal)
+    _json(debug / "resolved_layout.json", outcome.layout.to_dict())
+    _json(debug / "conversion.json", outcome.conversion)
 
-        stage_started = time.monotonic()
-        try:
-            plan, km, published = tasks.run_metric(llm, context, outcome, journal)
-            journal.stage("metric", "ok", _ms(stage_started))
-            journal.decision(assessment_mode=plan.assessment_mode,
-                             metric=plan.metric_name, method=plan.method,
-                             reducer=plan.reducer)
-            _json(debug / "measurement_plan.json", plan.to_dict())
-            break
-        except (MeasurementPlanError, NotEvaluableError, StructuredOutputError) as exc:
-            journal.stage("metric", "degraded", _ms(stage_started))
-            journal.warning(
-                exc.reason_code,
-                f"план не построен на листе {outcome.layout.sheet_name!r}: {exc}",
-            )
-            if (
-                not isinstance(exc, AmbiguousBaselineError)
-                and not sheet_name
-                and attempt == 1
-                and len(context.sheets) > 1
-            ):
-                rejected = frozenset({outcome.layout.sheet_name})
-                fallback = (outcome, exc)
-                continue
-            # Корзина публикуется всегда, когда канон собран.
-            plan, km = None, _not_computable(context.basket_id, exc)
-            published = publish_umr(outcome.frame, outcome.layout, None)
-            status = "not_computable"
-            break
-    if plan is not None and plan.reported_value is None:
-        # Дефект артефактов: km_result обязан согласоваться с monitoring_metric,
-        # который уйдёт как not_computable / official_baseline_missing.
-        status = "not_computable"
-        journal.warning(
-            "official_baseline_missing",
-            "отчёт о валидации не объявляет КМ — корзина публикуется без значения",
+    # S: сохраняем оценки даже при последующем отказе K.
+    plan, km, published, score_error = None, None, None, None
+    stage_started = time.monotonic()
+    try:
+        plan, km, published = tasks.run_metric(llm, context, outcome, journal)
+        journal.stage("metric", "ok", _ms(stage_started))
+        journal.decision(assessment_mode=plan.assessment_mode, metric=plan.metric_name,
+                         method=plan.method, reducer=plan.reducer)
+    except BasketError as exc:
+        reason = (
+            'Этап S. Ожидалось: исполнимый план оценки единиц на выбранном листе. '
+            f'Получено: {exc.reason_code}: {exc}. Действие: проверьте score-колонки, '
+            'политику пропусков, кеш формул и методику в документах; повторите запуск. '
+            'Лист не изменён; корзина опубликована без main_metric.'
         )
+        score_error = ScorePlanError(reason, cause=exc.to_dict(), stage='S')
+        km = _not_computable(context.basket_id, score_error)
+        published = publish_umr(outcome.frame, outcome.layout, None)
+        journal.stage("metric", "degraded", _ms(stage_started))
+        journal.warning(score_error.reason_code, reason)
+
+    # K выполняется и после отказа S; ни recomputed_value, ни данные scores в LLM не уходят.
+    stage_started = time.monotonic()
+    baseline = None
+    try:
+        baseline = tasks.run_baseline(llm, context, outcome.layout.sheet_name, plan)
+        if plan is not None and baseline.state == 'declared':
+            plan = attach_baseline(plan, baseline)
+            _scored, km = evaluate(outcome.frame, outcome.layout, plan)
+    except BasketError as exc:
+        previous = baseline
+        baseline = failed_baseline(
+            f'{exc.reason_code}: {exc}', ambiguous=previous is not None,
+            candidates=previous.candidates if previous is not None else (),
+            rejected=previous.rejected if previous is not None else (),
+        )
+    journal.stage("baseline", "ok" if baseline.state == 'declared' else "degraded", _ms(stage_started))
+    for warning in baseline.warnings:
+        journal.warning(warning['code'], warning['message'])
+    if baseline.reason_code:
+        journal.warning(baseline.reason_code, baseline.reason)
+    status = 'computed' if plan is not None and baseline.state == 'declared' else 'not_computable'
+    if score_error is None and status == 'not_computable':
+        km.update(status=status, basket_id=context.basket_id,
+                  reason_code=baseline.reason_code, reason=baseline.reason)
+    if plan is not None:
+        _json(debug / "measurement_plan.json", plan.to_dict())
+    _json(debug / "baseline.json", baseline.to_dict())
     _json(debug / "publication.json", published.to_dict())
 
     excel_name = f"umr_{context.basket_id}.xlsx"
@@ -207,6 +184,9 @@ def run_package(
                     transport_retries=llm.transport_retries)
     report = journal.report(basket_id=context.basket_id, status=status,
                             km=_km_summary(km))
+    report["baseline"] = baseline.to_dict()
+    if status != 'computed':
+        report['reason_code'], report['reason'] = km['reason_code'], km['reason']
     _atomic_json(root / "run_report.json", report)
     logger.info("Итог прогона: статус %s, строк UMR %d, файл %s",
                 status, len(published.frame), excel_name)

@@ -119,8 +119,8 @@ def _monitoring_metric(result: RunResult) -> dict[str, object]:
             "status": "not_computable",
             "basket_id": plan.basket_id,
             "assessment_mode": plan.assessment_mode,
-            "reason": "Validation report не содержит официальный baseline",
-            "reason_code": "official_baseline_missing",
+            "reason": result.km.get("reason", "Этап K: Validation report не содержит официальный baseline"),
+            "reason_code": result.km.get("reason_code", "official_baseline_missing"),
             "baseline": {
                 "value": None,
                 "scale": recomputed_scale,
@@ -221,6 +221,7 @@ def main(
     assessor_instruction: str | Path,
     model_id: str = "glm-5.2",
     sheet_name: str = "",
+    agent_ci: str = "",
 ):
     """Запустить полный laim-basket внутри одной Sber DS-ноды."""
     # Платформа не настраивает logging: без обработчика записи INFO из
@@ -250,7 +251,7 @@ def main(
     client = LlmClient(config, out_dir / "debug")
     try:
         result = run_package(
-            package, out_dir, client=client, sheet_name=sheet_name
+            package, out_dir, client=client, sheet_name=sheet_name, agent_ci=agent_ci
         )
     except BasketError as exc:
         # Платформа показывает только str(exc), а debug-каталог гибнет вместе

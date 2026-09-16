@@ -27,13 +27,6 @@
                   "uiComponent": "input",
                   "type": "string",
                   "defaultValue": ""
-                },
-                {
-                  "parameter": "agent_ci",
-                  "label": "Agent CI",
-                  "uiComponent": "input",
-                  "type": "string",
-                  "defaultValue": ""
                 }
               ]
             }
@@ -171,8 +164,7 @@
         "laim_basket/transform/identity.py",
         "laim_basket/transform/region.py",
         "laim_basket/transform/values.py",
-        "laim_basket/umr_schema.py",
-        "laim_basket/metric/baseline.py"
+        "laim_basket/umr_schema.py"
       ],
       "functionName": "main",
       "functionParameters": [],

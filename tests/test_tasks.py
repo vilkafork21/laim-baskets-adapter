@@ -2,23 +2,17 @@
 from __future__ import annotations
 
 
-from conftest import layout_answer, metric_answer
+from conftest import baseline_answer, layout_answer, metric_answer
 from helpers import FakeClient, make_docx, make_package, make_workbook
 from laim_basket.journal import Journal
 from laim_basket.llm import tasks
+from laim_basket.metric.baseline import attach_baseline
+from laim_basket.metric.engine import evaluate
 
 ROWS = [["q", "a", "m", "alt"], ["в1", "о1", 1, 1], ["в2", "о2", 0, 0.8]]
-# Заявленное значение, которого пересчёт по колонке C (0.5) не даёт.
-REPORTED_MISMATCH = {"state": "declared", "value": 0.9, "raw": "0.9"}
-
-
 def _context(tmp_path):
     package = make_package(tmp_path, {"Лист1": {"rows": ROWS}})
     return tasks.build_run_context(package)
-
-
-def _mismatching(**overrides):
-    return metric_answer(reported_value=REPORTED_MISMATCH, **overrides)
 
 
 def _layout(tmp_path, journal):
@@ -54,7 +48,8 @@ def test_metric_match_needs_single_call(tmp_path):
 
     _plan, metric, _published = tasks.run_metric(client, ctx, outcome, journal)
 
-    assert metric["reconciliation"]["status"] == "match"
+    assert metric["reconciliation"]["status"] == "not_applicable"
+    assert _plan.reported_value is None
     assert client.calls == 1
     assert journal.warnings == []
 
@@ -64,8 +59,7 @@ def test_metric_not_declared_publishes_no_value(tmp_path):
     # здесь фиксируется, что пересчёт не публикуется как значение КМ.
     journal = Journal()
     ctx, outcome = _layout(tmp_path, journal)
-    absent = metric_answer(
-        reported_value={"state": "not_declared", "value": None, "raw": None})
+    absent = metric_answer()
 
     _plan, metric, published = tasks.run_metric(
         FakeClient([absent]), ctx, outcome, journal)
@@ -83,27 +77,28 @@ def test_metric_mismatch_is_informational_only(tmp_path):
     outcome = tasks.run_layout(FakeClient([layout_answer()]), ctx, journal, "",
                                frozenset())
     # Заявлено 0.9, пересчёт по C даёт 0.5; второй ответ не должен понадобиться.
-    client = FakeClient([_mismatching(), _mismatching()])
+    client = FakeClient([metric_answer(), baseline_answer("0.9")])
 
     _plan, metric, _published = tasks.run_metric(client, ctx, outcome, journal)
+    official = tasks.run_baseline(client, ctx, outcome.layout.sheet_name, _plan)
+    _plan = attach_baseline(_plan, official)
+    _, metric = evaluate(outcome.frame, outcome.layout, _plan)
 
     assert float(metric["main_metric"]["value"]) == 0.9
     assert metric["reconciliation"]["status"] == "mismatch"  # информационно
-    assert client.calls == 1
+    assert client.calls == 2
     assert journal.warnings == []
 
 
-def test_metric_uncited_reported_value_goes_to_repair(tmp_path):
+def test_baseline_uncited_value_is_rejected_without_repairing_score_plan(tmp_path):
     journal = Journal()
-    ctx, outcome = _layout(tmp_path, journal)      # отчёт: «…равна 0.5»
-    uncited = metric_answer(
-        reported_value={"state": "declared", "value": 0.9, "raw": "0.9"})
-    client = FakeClient([uncited, metric_answer()])
-
-    _plan, metric, _published = tasks.run_metric(client, ctx, outcome, journal)
-
-    assert client.labels == ["metric_turn1", "metric_turn2"]  # repair, не сверка
-    assert float(metric["main_metric"]["value"]) == 0.5
+    ctx, outcome = _layout(tmp_path, journal)
+    plan, _, _ = tasks.run_metric(FakeClient([metric_answer()]), ctx, outcome, journal)
+    client = FakeClient([baseline_answer("0.9") + baseline_answer()])
+    result = tasks.run_baseline(client, ctx, outcome.layout.sheet_name, plan)
+    assert client.labels == ["baseline_turn1"]
+    assert result.value == 0.5
+    assert len(result.rejected) == 1
 
 def test_layout_warns_when_session_source_rejected(tmp_path):
     journal = Journal()

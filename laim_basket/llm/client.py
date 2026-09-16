@@ -18,7 +18,6 @@ import requests
 from .. import defaults
 from ..config import LlmConfig
 from ..errors import (
-    AmbiguousBaselineError,
     BasketError,
     LlmError,
     StructuredOutputError,
@@ -33,7 +32,7 @@ _TRANSPORT_RETRIES = 3
 
 _REPAIR = (
     "Твой предыдущий ответ отклонён валидатором. Точная причина:\n{error}\n"
-    "Верни ИСПРАВЛЕННЫЙ полный JSON-объект (не диф) и ничего кроме JSON."
+    "Верни ИСПРАВЛЕННЫЙ полный JSON по схеме (не диф) и ничего кроме JSON."
 )
 
 
@@ -165,26 +164,29 @@ class LlmClient:
         raise last_error or LlmError("LLM недоступна после ретраев")
 
 
-def extract_json(content: str) -> dict:
-    for match in _FENCED.finditer(content):
+def extract_json(content: str) -> dict | list:
+    candidates = [match.group(1) for match in _FENCED.finditer(content)] + [content.strip()]
+    for text in candidates:
         try:
-            return json.loads(match.group(1))
+            obj = json.loads(text)
         except json.JSONDecodeError:
             continue
-    start = content.find("{")
-    if start == -1:
-        raise LlmError("В ответе нет JSON-объекта", content_head=content[:200])
-    try:
-        obj, _ = json.JSONDecoder().raw_decode(content[start:])
-    except json.JSONDecodeError as exc:
-        raise LlmError(f"JSON не парсится: {exc}", content_head=content[:200]) from exc
-    if not isinstance(obj, dict):
-        raise LlmError("Ожидался JSON-объект, получено иное")
-    return obj
+        if isinstance(obj, (dict, list)):
+            return obj
+    # Текстовый шлюз иногда предваряет JSON пояснением.
+    starts = [pos for pos in (content.find("{"), content.find("[")) if pos >= 0]
+    if starts:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(content[min(starts):])
+            if isinstance(obj, (dict, list)):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    raise LlmError("В ответе нет корректного JSON-объекта или массива", content_head=content[:200])
 
 
 def request_structured(client: LlmClient, messages: list[dict], schema: dict,
-                       label: str, validate_extra=None, max_turns: int = 3) -> dict:
+                       label: str, validate_extra=None, max_turns: int = 3) -> dict | list:
     """Цикл structured-JSON: schema в response_format (если шлюз умеет) и в
     промпте; локальная валидация всегда; validate_extra(obj) может бросить
     BasketError — её текст уходит модели как repair."""
@@ -203,8 +205,6 @@ def request_structured(client: LlmClient, messages: list[dict], schema: dict,
             last_exception = exc
         except LlmError as exc:
             last_error, last_exception = str(exc), exc
-        except AmbiguousBaselineError:
-            raise
         except Exception as exc:  # BasketError из validate_extra
             last_error, last_exception = f"{type(exc).__name__}: {exc}", exc
             details = getattr(exc, "details", None)
