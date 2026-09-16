@@ -153,6 +153,7 @@
         "laim_basket/llm/schemas.py",
         "laim_basket/llm/tasks.py",
         "laim_basket/metric/__init__.py",
+        "laim_basket/metric/nonadditive.py",
         "laim_basket/metric/engine.py",
         "laim_basket/metric/resolve.py",
         "laim_basket/models.py",

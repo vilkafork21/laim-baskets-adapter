@@ -114,7 +114,17 @@ _SOURCE = {
     "required": ["column_id", "role", "normalization", "polarity"],
     "properties": {
         "column_id": _ADDRESS,
-        "role": {"enum": ["final_score", "criterion", "assessor_vote", "prediction", "target"]},
+        "role": {
+            "enum": [
+                "final_score",
+                "criterion",
+                "assessor_vote",
+                "prediction",
+                "target",
+                "precision_component",
+                "recall_component",
+            ]
+        },
         "normalization": {
             "oneOf": [
                 {"enum": ["numeric", "label"]},
@@ -151,6 +161,8 @@ METRIC_SCHEMA = {
                 "all_criteria",
                 "all_assessors",
                 "majority",
+                "harmonic_mean_of_means",
+                "classification_f1",
             ]
         },
         "sources": {"type": "array", "minItems": 1, "items": _SOURCE},
@@ -158,6 +170,26 @@ METRIC_SCHEMA = {
         "missing_policy": {"enum": ["fail", "exclude_unit", "exclude_value", "zero"]},
         "majority_denominator": {"enum": ["declared", "present", None]},
         "scale": {"enum": ["ratio", "percent", "raw"]},
+        "metric_options": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "zero_division": {"enum": [0, 1, "fail"]},
+                "average": {"enum": ["binary", "micro", "macro", "weighted"]},
+                "labels": {
+                    "oneOf": [
+                        {"type": "null"},
+                        {
+                            "type": "array",
+                            "minItems": 1,
+                            "uniqueItems": True,
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                    ]
+                },
+                "positive_label": {"type": ["string", "null"], "minLength": 1},
+            },
+        },
         "missing_values": {
             "type": "object",
             "additionalProperties": {

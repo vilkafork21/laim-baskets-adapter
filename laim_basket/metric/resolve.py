@@ -21,6 +21,7 @@ from ..reading.formulas import is_row_local_formula
 from ..reading.xlsx_reader import RawSheet
 from ..transform.values import blank as _blank
 from ..transform.values import normalize_key
+from .nonadditive import validate_options
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,9 @@ def _validate_source_contract(method: str, sources: list[dict[str, object]]) -> 
     expected = {
         "identity": counts == Counter({"final_score": 1}),
         "accuracy": counts == Counter({"prediction": 1, "target": 1}),
+        "classification_f1": counts == Counter({"prediction": 1, "target": 1}),
+        "harmonic_mean_of_means": counts
+        == Counter({"precision_component": 1, "recall_component": 1}),
         "mean_criteria": counts["criterion"] >= 2 and len(counts) == 1,
         "all_criteria": counts["criterion"] >= 2 and len(counts) == 1,
         "majority": counts["assessor_vote"] >= 2 and len(counts) == 1,
@@ -155,6 +159,7 @@ def resolve_measurement_plan(
             path=exc.json_path,
         ) from exc
 
+    metric_options = validate_options(proposal)
     method = proposal["method"]
     sources = [dict(source) for source in proposal["sources"]]
     _validate_source_contract(method, sources)
@@ -354,4 +359,5 @@ def resolve_measurement_plan(
         reported_raw=None,
         evidence={key: tuple(values) for key, values in proposal["quotes"].items()},
         missing_values=missing_values,
+        metric_options=metric_options,
     )

@@ -9,6 +9,8 @@ from ..errors import MeasurementPlanError, NotEvaluableError
 from ..models import MeasurementPlan, ResolvedLayout
 from ..transform.values import blank as _blank
 from ..transform.values import normalize_key
+from .nonadditive import METHODS as NONADDITIVE_METHODS
+from .nonadditive import aggregate
 from .resolve import decimal_value, reported_quantum
 
 logger = logging.getLogger(__name__)
@@ -236,6 +238,23 @@ def evaluate(
             plan.scale,
         )
     records = _unit_records(frame, values, plan)
+    if plan.method in NONADDITIVE_METHODS:
+        value, coverage, statistics = aggregate(records, plan)
+        published = _published_scale(value, plan.scale)
+        statistics.update(
+            statistics_version="laim.nonadditive-statistics.v1",
+            value_scale="ratio",
+            result_exact=str(value),
+        )
+        km = {
+            "recomputed_value": float(published),
+            "recomputed_exact": str(published),
+            "coverage": coverage,
+            "percent_domain_columns": percent_columns,
+            "aggregation_statistics": statistics,
+        }
+        # Никакой фиктивной main_metric: downstream обязан агрегировать компоненты/классы.
+        return frame.drop(columns=["main_metric"], errors="ignore").copy(), reconcile(km, plan)
     scores = [_score(record, plan) for record in records]
     scored = [(record, score) for record, score in zip(records, scores) if score is not None]
     if not scored:

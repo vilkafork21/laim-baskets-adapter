@@ -3,6 +3,7 @@
 from decimal import Decimal
 
 from .errors import PackageError
+from .metric.nonadditive import METHODS as NONADDITIVE_METHODS
 from .models import RunResult
 
 
@@ -63,6 +64,7 @@ def monitoring_metric(result: RunResult) -> dict[str, object]:
             "reason": result.km.get("reason", "КМ не вычислена"),
             "reason_code": result.km.get("reason_code"),
         }
+    nonadditive = plan.method in NONADDITIVE_METHODS
     metric = result.km["main_metric"]
     recomputed_value, recomputed_scale = _normalized(metric["recomputed_value"], plan.scale)
     baseline_value, baseline_scale = _normalized(plan.reported_value, plan.scale)
@@ -71,10 +73,16 @@ def monitoring_metric(result: RunResult) -> dict[str, object]:
         "status": "computed",
         "basket_id": plan.basket_id,
         "name": plan.metric_name,
-        "score_column": "main_metric",
+        "score_column": None if nonadditive else "main_metric",
+        **(
+            {"score_scope": "dataset", "required_capabilities": ["laim.nonadditive-metrics.v1"]}
+            if nonadditive
+            else {}
+        ),
         "assessment_mode": plan.assessment_mode,
         "scoring": {
             "method": plan.method,
+            **({"metric_options": dict(plan.metric_options)} if nonadditive else {}),
             "sources": [
                 {
                     "source_id": f"source_{index}",
@@ -94,7 +102,16 @@ def monitoring_metric(result: RunResult) -> dict[str, object]:
             "majority_denominator": plan.majority_denominator,
         },
         "aggregation": {
-            "method": plan.reducer,
+            "method": plan.method if nonadditive else plan.reducer,
+            **(
+                {
+                    "sample_weighting": "frequency"
+                    if plan.reducer == "frequency_weighted_mean"
+                    else "uniform"
+                }
+                if nonadditive
+                else {}
+            ),
             "weight_column": "input_query_count"
             if plan.reducer == "frequency_weighted_mean"
             else None,

@@ -23,7 +23,13 @@ from .transform.values import blank, slug
 FLAT_SHEET = "Вариант для отд. запросов"
 DIALOGUE_SHEET = "Вариант для диалога"
 
-_METRIC_ROLES = {"final_score", "criterion", "assessor_vote"}
+_METRIC_ROLES = {
+    "final_score",
+    "criterion",
+    "assessor_vote",
+    "precision_component",
+    "recall_component",
+}
 _LABEL_ROLES = {"prediction": "output_answer", "target": "reference_answer"}
 # Колонки спецификации с фиксированным местом; остальные (reference_answer(_N),
 # [module]_*, *_metric) идут между ними в физическом порядке колонок корзины.
@@ -156,6 +162,8 @@ def _source_columns(
             result[name] = [
                 None if value is None else float(value) for value in metrics[source["column_id"]]
             ]
+        elif plan.method == "classification_f1":
+            result[name] = metrics[source["column_id"]]
         elif name not in frame:
             result[name] = frame[layout.column_names[source["column_id"]]].tolist()
     return result

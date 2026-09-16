@@ -159,6 +159,7 @@ def test_public_descriptor_changes_only_optional_agent_ci_and_sources():
 
     for added in (
         "laim_basket/metric/baseline.py",
+        "laim_basket/metric/nonadditive.py",
         "laim_basket/context.py",
         "laim_basket/contract.py",
     ):
