@@ -66,6 +66,11 @@ def _km_summary(km: dict | None) -> dict | None:
         "scale": metric["scale"],
         "reconciliation": km["reconciliation"]["status"],
         "coverage": km["coverage"],
+        **(
+            {"aggregation_statistics": km["aggregation_statistics"]}
+            if "aggregation_statistics" in km
+            else {}
+        ),
     }
 
 

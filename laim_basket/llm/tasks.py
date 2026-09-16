@@ -271,6 +271,14 @@ def run_metric(
         },
     )
     request_structured(client, base_messages, METRIC_SCHEMA, "metric", validate_extra=validate)
+    if resolved["plan"].metric_options:
+        journal.warning(
+            "nonadditive_metric",
+            "КМ определена на выборке: main_metric по строкам не публикуется. "
+            "Потребитель должен поддерживать laim.nonadditive-metrics.v1 и порядок агрегации.",
+        )
+        if resolved["plan"].evidence.get("naming"):
+            journal.warning("metric_naming_review", "; ".join(resolved["plan"].evidence["naming"]))
     if resolved["plan"].missing_values:
         journal.warning(
             "declared_missing_values",

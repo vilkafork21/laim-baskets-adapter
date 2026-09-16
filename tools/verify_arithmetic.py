@@ -12,6 +12,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 
 import openpyxl
@@ -40,6 +41,84 @@ def number(value, source, scale):
     return 1 - result if source["polarity"] == "inverted" else result
 
 
+def nonlinear(samples, plan):
+    """Независимый Fraction-пересчёт: не импортирует код агрегатора ноды."""
+    method = plan["method"]
+    options = plan["metric_options"]
+    roles = [source["role"] for source in plan["sources"]]
+    policy = plan["missing_policy"]
+    kept = []
+    for values, weight in samples:
+        missing = any(v is None for v in values)
+        if missing and policy == "fail":
+            raise ValueError("Пропуск при policy=fail")
+        if missing and policy == "exclude_unit":
+            continue
+        if missing and policy == "zero":
+            values = [0 if v is None else v for v in values]
+        if all(v is None for v in values):
+            continue
+        kept.append((dict(zip(roles, values)), Fraction(weight)))
+
+    def divide(a, b):
+        if b:
+            return a / b
+        if options["zero_division"] == "fail":
+            raise ValueError("Неопределённая F1 по заданной политике")
+        return Fraction(options["zero_division"])
+
+    if method == "harmonic_mean_of_means":
+        stats = {}
+        means = []
+        for role in ("precision_component", "recall_component"):
+            pairs = [(Fraction(v[role]), w) for v, w in kept if v[role] is not None]
+            total = sum((v * w for v, w in pairs), Fraction(0))
+            den = sum((w for v, w in pairs), Fraction(0))
+            if not den:
+                raise ValueError("Компонент отсутствует целиком")
+            means.append(total / den)
+            stats[role] = {"sum": str(total), "weight": str(den), "units": len(pairs)}
+        a, b = means
+        value = divide(2 * a * b, a + b)
+    else:
+        labels = options["labels"]
+        if options["average"] == "binary":
+            labels = [label(options["positive_label"])]
+        elif labels is None:
+            labels = sorted({v[role] for v, _w in kept for role in ("target", "prediction")})
+        else:
+            labels = [label(v) for v in labels]
+        counts = []
+        for cls in labels:
+            tp = sum((w for v, w in kept if v["target"] == v["prediction"] == cls), Fraction(0))
+            fp = sum((w for v, w in kept if v["prediction"] == cls != v["target"]), Fraction(0))
+            fn = sum((w for v, w in kept if v["target"] == cls != v["prediction"]), Fraction(0))
+            counts.append((tp, fp, fn))
+        if options["average"] in {"binary", "micro"}:
+            value = divide(
+                sum(2 * tp for tp, fp, fn in counts), sum(2 * tp + fp + fn for tp, fp, fn in counts)
+            )
+        else:
+            weights = (
+                [tp + fn for tp, fp, fn in counts]
+                if options["average"] == "weighted"
+                else [1] * len(counts)
+            )
+            weights = weights if sum(weights) else [1] * len(counts)
+            value = sum(
+                divide(2 * tp, 2 * tp + fp + fn) * w
+                for (tp, fp, fn), w in zip(counts, weights)
+                if w
+            ) / sum(weights)
+        stats = {
+            "counts": [
+                {"label": cls, "tp": str(tp), "fp": str(fp), "fn": str(fn)}
+                for cls, (tp, fp, fn) in zip(labels, counts)
+            ]
+        }
+    return value, len(kept), stats
+
+
 def verify(case, root, result):
     proposals = case.get("reviewed_proposals")
     if not proposals:
@@ -53,6 +132,8 @@ def verify(case, root, result):
         "mean_criteria",
         "all_criteria",
         "all_assessors",
+        "harmonic_mean_of_means",
+        "classification_f1",
     }:
         return {"case_id": case["case_id"], "status": "unsupported_method", "method": method}
     path = root / case["inputs"]["test_set"]
@@ -82,6 +163,7 @@ def verify(case, root, result):
         units[key].append(row)
     numerator, denominator = Decimal(0), Decimal(0)
     scored = 0
+    samples = []
     for records in units.values():
         vals = []
         for source in sources:
@@ -98,6 +180,14 @@ def verify(case, root, result):
             }:
                 raw = None
             vals.append(number(raw, source, plan["scale"]))
+        if method in {"harmonic_mean_of_means", "classification_f1"}:
+            weight = (
+                Decimal(str(cell(records[0], layout["weight_column"])))
+                if plan["reducer"] == "frequency_weighted_mean"
+                else Decimal(1)
+            )
+            samples.append((vals, weight))
+            continue
         if any(v is None for v in vals):
             policy = plan["missing_policy"]
             if policy == "fail":
@@ -128,6 +218,11 @@ def verify(case, root, result):
         numerator += score * weight
         denominator += weight
         scored += 1
+    extra = {}
+    if method in {"harmonic_mean_of_means", "classification_f1"}:
+        exact, scored, statistics = nonlinear(samples, plan)
+        numerator, denominator = Decimal(exact.numerator), Decimal(exact.denominator)
+        extra = {"method": method, "independent_statistics": statistics}
     value = numerator / denominator
     if plan["scale"] == "percent":
         value *= 100
@@ -135,6 +230,7 @@ def verify(case, root, result):
     return {
         "case_id": case["case_id"],
         "status": "checked",
+        **extra,
         "units": len(units),
         "scored_units": scored,
         "numerator": str(numerator),

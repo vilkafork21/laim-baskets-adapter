@@ -82,6 +82,8 @@ class MeasurementPlan:
     evidence: dict[str, tuple[str, ...]]
     missing_values: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
+    metric_options: dict[str, object] = field(default_factory=dict)
+
     @property
     def evaluation_unit(self) -> str:
         return "dialogue" if self.assessment_mode == "dialogue" else "turn"
@@ -100,6 +102,7 @@ class MeasurementPlan:
             "assessment_mode": self.assessment_mode,
             "score": {
                 "method": self.method,
+                **({"metric_options": dict(self.metric_options)} if self.metric_options else {}),
                 "sources": list(self.sources),
                 "missing_policy": self.missing_policy,
                 "majority_denominator": self.majority_denominator,

@@ -52,6 +52,25 @@ prediction | target. Для prediction/target normalization=label, для чис
 - identity требует ровно один final_score; mean_criteria/all_criteria — минимум
 два criterion; majority/all_assessors — минимум два assessor_vote; accuracy —
 ровно по одному prediction и target.
+- harmonic_mean_of_means: ТОЛЬКО если методика требует сначала средние двух
+компонентов, затем их гармоническое среднее 2PR/(P+R). Роли precision_component
+и recall_component (ровно по одной). Оценки 0/1/2 нормализуй явным value_map,
+например {"0":0,"1":0.5,"2":1} при scale=ratio. Не добавляй третий критерий.
+metric_options={"zero_division":0|1|"fail"} по методике. exclude_unit исключает
+неполную пару, exclude_value даёт отдельные знаменатели компонентам, zero
+заменяет пропуски нулём. quotes обязаны назвать формулу и порядок агрегации.
+- classification_f1: для prediction/target классов, не экспертных компонентов.
+metric_options требует average (binary/micro/macro/weighted), labels (полный
+выбранный список классов или null = объединение наблюдаемых), positive_label
+(строка только для binary, иначе null) и zero_division (0/1/"fail"). binary
+требует labels=null. missing_policy только fail/exclude_unit. multilabel и
+усреднение построчных F1 не поддерживаются этим методом.
+- В обоих F1 reducer задаёт ВЕС ЕДИНИЦ: mean = равный вес, frequency_weighted_mean
+= частоты; это не финальное усреднение F1. weighted в average взвешивает классы
+по поддержке и не является частотой строк. Не выбирай семейство F1 только по
+названию macro/micro: формула в методике определяет операцию. Если подпись
+в отчёте расходится с формулой, сохрани дословное название и отметь конфликт
+в quotes.naming; не подбирай метод для совпадения с baseline.
 - Построчная формула с A1-ссылками только своей строки допустима по сохранённому
 кешу Excel. Межстрочные ссылки, внешние листы, именованные и динамические
 диапазоны не допускаются. Формулы не пересчитываются внутри ноды.
